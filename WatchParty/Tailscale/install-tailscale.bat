@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
 
 set "TAILSCALE_MSI=%~dp0tailscale-setup-1.102.3-amd64.msi"
@@ -27,8 +27,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if exist "%ProgramFiles%\Tailscale\tailscale-ipn.exe" (
-    start "Tailscale" "%ProgramFiles%\Tailscale\tailscale-ipn.exe"
+set "PROJECT_ROOT=%~dp0..\.."
+if exist "%PROJECT_ROOT%\python.exe" (
+    "%PROJECT_ROOT%\python.exe" "%PROJECT_ROOT%\portable_config\syncplay\tailscale_integration.py" open >nul 2>&1
 )
 echo [Tailscale] 安装完成。请在托盘图标中登录，然后运行 configure-host.bat 或 configure-viewer.bat。
 pause

@@ -35,6 +35,10 @@ DEFAULT_ALIST_PORT = 5244
 INSTALLER_NAME = "tailscale-setup-1.102.3-amd64.msi"
 INSTALLER_PATH = os.path.join(TAILSCALE_DIR, INSTALLER_NAME)
 INSTALLER_SHA256 = "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE"
+# The current official Windows MSI installs under ``Tailscale IPN``.  Keep
+# the older ``Tailscale`` directory as a compatibility fallback for existing
+# installations and portable builds.
+TAILSCALE_INSTALL_DIRS = ("Tailscale IPN", "Tailscale")
 
 
 class TailscaleIntegrationError(RuntimeError):
@@ -119,13 +123,23 @@ def locate_tailscale(explicit=None):
     candidates = []
     if explicit:
         candidates.append(os.path.abspath(os.path.expandvars(explicit)))
+    # The full host bundle keeps the matching CLI beside mpv.  Do not rely
+    # on the caller's inherited PATH: a double-clicked .bat or an already
+    # running mpv process can have an older environment snapshot.
+    candidates.append(os.path.join(PROJECT_ROOT, "tailscale.exe"))
+    for variable in (
+            "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)",
+            "LOCALAPPDATA"):
+        base = os.environ.get(variable)
+        if base:
+            for directory_name in TAILSCALE_INSTALL_DIRS:
+                candidates.append(os.path.join(
+                    base, directory_name, "tailscale.exe"))
+    # PATH is a final fallback.  A long-running mpv process can inherit an
+    # older PATH entry, so installed locations above take precedence.
     found = shutil.which("tailscale.exe") or shutil.which("tailscale")
     if found:
         candidates.append(found)
-    for variable in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA"):
-        base = os.environ.get(variable)
-        if base:
-            candidates.append(os.path.join(base, "Tailscale", "tailscale.exe"))
     seen = set()
     for candidate in candidates:
         key = os.path.normcase(os.path.normpath(candidate))

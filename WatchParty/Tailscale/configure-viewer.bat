@@ -1,12 +1,21 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0..\.."
 set "VIEWER_HOST=%~1"
 if defined VIEWER_HOST (
-    "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" configure-viewer "%VIEWER_HOST%"
+    if exist "%CD%\tailscale.exe" (
+        "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" --cli "%CD%\tailscale.exe" configure-viewer "%VIEWER_HOST%"
+    ) else (
+        "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" configure-viewer "%VIEWER_HOST%"
+    )
 ) else (
-    "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" configure-viewer
+    if exist "%CD%\tailscale.exe" (
+        "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" --cli "%CD%\tailscale.exe" configure-viewer
+    ) else (
+        "%CD%\python.exe" "%CD%\portable_config\syncplay\tailscale_integration.py" configure-viewer
+    )
 )
 set "VIEWER_RESULT=%ERRORLEVEL%"
 echo.

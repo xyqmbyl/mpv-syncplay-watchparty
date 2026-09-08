@@ -64,6 +64,13 @@ tailnet 间共享机器时，接收方看到的 `100.x` 地址可能不同；完
 媒体地址：https://主机名.tailnet.ts.net
 ```
 
+如果双击批处理时出现“文件名、目录名或卷标语法不正确”、`echo` 未找到或乱码，
+请重新解压 Release 中的完整包，不要用文本编辑器重新保存 `.bat`。当前脚本固定
+为 UTF-8 无 BOM、CRLF 换行的 Windows `cmd.exe` 格式，并会优先调用项目根目录的
+`tailscale.exe`；观看者向导会通过内置检测兼容官方当前的 `Tailscale IPN` 安装目录，
+不需要手动修改 PATH。源码仓库不包含完整的 mpv/Python 运行时，
+房主应在已有的 mpv 便携目录中运行脚本；观看者应使用 Release 的完整 ZIP。
+
 观看者最终仍需用项目中的 `[AList Media Test]` 验证实际视频地址返回
 `HTTP 206` 和有效 `Content-Range`。若 Tailscale 显示 `relay`，视频可能经
 DERP 中继而速度较慢；这不是 Syncplay 同步故障。

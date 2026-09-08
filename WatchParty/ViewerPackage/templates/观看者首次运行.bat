@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 title MPV Syncplay 观看者首次设置
@@ -12,13 +12,23 @@ echo 房主地址已预设为：__TAILSCALE_HOST__
 echo 此地址不是密码；只有获得房主 Tailscale 共享授权的设备才能访问。
 echo.
 
-set "TAILSCALE_UI=%ProgramFiles%\Tailscale\tailscale-ipn.exe"
-if not exist "%TAILSCALE_UI%" (
-    echo [1/3] 此电脑尚未安装 Tailscale，即将打开官方安装界面。
-    call "%~dp0WatchParty\Tailscale\install-tailscale.bat"
+set "TS_PYTHON=%~dp0python.exe"
+set "TS_SCRIPT=%~dp0portable_config\syncplay\tailscale_integration.py"
+if not exist "%TS_PYTHON%" (
+    echo 观看者包缺少内置 Python，请重新完整解压 ZIP。
+    pause
+    exit /b 1
 )
 
-if not exist "%TAILSCALE_UI%" (
+echo [1/3] 正在检查 Tailscale。
+"%TS_PYTHON%" "%TS_SCRIPT%" open >nul 2>&1
+if errorlevel 1 (
+    echo 此电脑尚未安装 Tailscale，即将打开官方安装界面。
+    call "%~dp0WatchParty\Tailscale\install-tailscale.bat"
+    "%TS_PYTHON%" "%TS_SCRIPT%" open >nul 2>&1
+)
+
+if errorlevel 1 (
     echo.
     echo Tailscale 尚未安装完成。请完成安装后重新运行本文件。
     pause
@@ -26,7 +36,6 @@ if not exist "%TAILSCALE_UI%" (
 )
 
 echo [2/3] 正在打开 Tailscale。
-start "Tailscale" "%TAILSCALE_UI%"
 echo.
 echo 请使用你自己的账号登录 Tailscale，并接受房主发来的设备共享邀请。
 echo 等到 Tailscale 显示“已连接”后，再回到此窗口继续。

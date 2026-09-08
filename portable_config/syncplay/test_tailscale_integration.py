@@ -97,6 +97,70 @@ class NormalizeHostTests(unittest.TestCase):
                     tailscale.normalize_host(value)
 
 
+class LocateTailscaleTests(unittest.TestCase):
+    def test_project_bundle_is_found_without_inherited_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundled = Path(directory, "tailscale.exe")
+            bundled.write_bytes(b"placeholder")
+            with mock.patch.object(tailscale, "PROJECT_ROOT", directory), \
+                    mock.patch.object(tailscale.shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {
+                        "ProgramFiles": directory,
+                        "ProgramW6432": directory,
+                        "LOCALAPPDATA": directory,
+                    }, clear=False):
+                self.assertEqual(
+                    tailscale.locate_tailscale(),
+                    str(bundled.resolve()),
+                )
+
+    def test_official_ipn_install_directory_is_found(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory, "Tailscale IPN", "tailscale.exe")
+            installed.parent.mkdir()
+            installed.write_bytes(b"placeholder")
+            project = Path(directory, "project")
+            project.mkdir()
+            with mock.patch.object(tailscale, "PROJECT_ROOT", str(project)), \
+                    mock.patch.object(tailscale.shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {
+                        "ProgramFiles": directory,
+                        "ProgramW6432": directory,
+                        "ProgramFiles(x86)": directory,
+                        "LOCALAPPDATA": directory,
+                    }, clear=False):
+                self.assertEqual(
+                    tailscale.locate_tailscale(),
+                    str(installed.resolve()),
+                )
+
+    def test_open_uses_gui_next_to_official_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            install_dir = Path(directory, "Tailscale IPN")
+            install_dir.mkdir()
+            cli = install_dir / "tailscale.exe"
+            gui = install_dir / "tailscale-ipn.exe"
+            cli.write_bytes(b"placeholder")
+            gui.write_bytes(b"placeholder")
+            project = Path(directory, "project")
+            project.mkdir()
+            with mock.patch.object(tailscale, "PROJECT_ROOT", str(project)), \
+                    mock.patch.object(tailscale.shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {
+                        "ProgramFiles": directory,
+                        "ProgramW6432": directory,
+                        "ProgramFiles(x86)": directory,
+                        "LOCALAPPDATA": directory,
+                    }, clear=False), \
+                    mock.patch.object(tailscale.subprocess, "Popen") as popen:
+                result = tailscale.open_tailscale()
+
+            self.assertTrue(result["opened"])
+            self.assertEqual(result["ui_path"], str(gui.resolve()))
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0], [str(gui.resolve())])
+
+
 class ExtractStatusTests(unittest.TestCase):
     def test_only_local_status_fields_are_extracted(self):
         cli_path = r"C:\Program Files\Tailscale\tailscale.exe"
@@ -295,6 +359,27 @@ class ConfigurationBuilderTests(unittest.TestCase):
             with self.subTest(status=status):
                 with self.assertRaises(ValueError):
                     tailscale.build_host_configuration(status)
+
+
+class BatchFileCompatibilityTests(unittest.TestCase):
+    """Keep Windows helper scripts directly executable from Explorer/cmd.exe."""
+
+    def test_batch_helpers_are_utf8_without_bom_and_use_crlf(self):
+        relative_paths = (
+            "WatchParty/Tailscale/configure-host.bat",
+            "WatchParty/Tailscale/configure-viewer.bat",
+            "WatchParty/Tailscale/install-tailscale.bat",
+            "WatchParty/Tailscale/status.bat",
+            "WatchParty/ViewerPackage/templates/观看者首次运行.bat",
+            "WatchParty/ViewerPackage/templates/启动观看.bat",
+        )
+        project_root = Path(tailscale.PROJECT_ROOT)
+        for relative_path in relative_paths:
+            with self.subTest(path=relative_path):
+                raw = (project_root / relative_path).read_bytes()
+                self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+                self.assertTrue(raw.startswith(b"@echo off"))
+                self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
 
 
 if __name__ == "__main__":

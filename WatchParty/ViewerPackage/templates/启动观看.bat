@@ -1,14 +1,21 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 
-if not exist "%ProgramFiles%\Tailscale\tailscale.exe" (
+set "TS_PYTHON=%~dp0python.exe"
+set "TS_SCRIPT=%~dp0portable_config\syncplay\tailscale_integration.py"
+if not exist "%TS_PYTHON%" (
     echo 尚未完成首次设置，即将进入设置向导。
     call "%~dp0观看者首次运行.bat"
     exit /b %ERRORLEVEL%
 )
 
-start "Tailscale" "%ProgramFiles%\Tailscale\tailscale-ipn.exe"
+"%TS_PYTHON%" "%TS_SCRIPT%" open >nul 2>&1
+if errorlevel 1 (
+    echo 尚未完成首次设置，即将进入设置向导。
+    call "%~dp0观看者首次运行.bat"
+    exit /b %ERRORLEVEL%
+)
 start "mpv" "%~dp0mpv.exe" --idle=yes --force-window=yes
 exit /b 0
