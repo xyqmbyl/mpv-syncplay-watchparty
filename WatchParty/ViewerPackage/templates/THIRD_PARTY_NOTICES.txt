@@ -1,0 +1,49 @@
+MPV Syncplay Viewer - Third-party notices
+=========================================
+
+This package contains redistributable binaries and assets from third-party
+projects. The corresponding license texts are in THIRD_PARTY_LICENSES.
+
+mpv
+  Version: v0.40.0-489-g95c7599c4
+  Source: https://github.com/mpv-player/mpv/commit/95c7599c4
+  License: GPL-2.0-or-later (conservative classification because the exact
+           build flags of this existing Windows binary are not recorded)
+  The binary also contains FFmpeg and other libraries listed by `mpv --version`.
+  See mpv-Copyright.txt for mpv's detailed licensing and component notes.
+
+Python
+  Version: 3.14.2 embedded Windows runtime
+  Source: https://www.python.org/downloads/release/python-3142/
+  Source code: https://github.com/python/cpython/tree/v3.14.2
+  License: Python Software Foundation License Version 2
+
+OpenSSL
+  Version: 3.0.18 (used by the embedded Python HTTPS client)
+  Source: https://github.com/openssl/openssl/tree/openssl-3.0.18
+  License: Apache License 2.0
+
+uosc
+  Version: 5.12.0
+  Source: https://github.com/tomasklaen/uosc/commit/0c8ca8b832270adee7684db6472c86f7aba2b170
+  License: LGPL-2.1
+
+Material Icons
+  Asset: MaterialIconsRound-Regular.otf
+  Source: https://github.com/google/material-design-icons
+  License: Apache License 2.0
+
+Tailscale
+  Installer version: 1.102.3
+  Installer: https://pkgs.tailscale.com/stable/tailscale-setup-1.102.3-amd64.msi
+  Source: https://github.com/tailscale/tailscale/tree/v1.102.3
+  License for the open-source Tailscale code: BSD-3-Clause
+
+Microsoft Visual C++ runtime files
+  The package includes Microsoft runtime DLLs required by the portable
+  executables. They remain subject to Microsoft's applicable redistributable
+  terms and are not covered by this project's license.
+
+No AList binary, database, administrator credential, media file, CUDA,
+TensorRT, VapourSynth, playback history, or Tailscale login credential is
+included in the viewer package.

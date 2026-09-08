@@ -1,0 +1,25 @@
+# Runtime state and private host data
+WatchParty/alist/
+WatchParty/media/
+WatchParty/Tailscale/connection.json
+WatchParty/Tailscale/*.msi
+WatchParty/ViewerPackage/output/
+release/
+ADMIN_PASSWORD.txt
+
+# mpv state
+portable_config/_cache/
+portable_config/**/__pycache__/
+portable_config/syncplay/syncplay_status.json
+portable_config/syncplay/syncplay_command.json
+portable_config/danmaku-history.json
+portable_config/saved-props.json
+
+# Generated and local files
+*.engine
+*.engine.*
+*.log
+*.pyc
+*.tmp
+*.zip
+!.github/**

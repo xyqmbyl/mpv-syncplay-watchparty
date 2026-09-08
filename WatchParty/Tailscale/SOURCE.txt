@@ -1,0 +1,12 @@
+Tailscale for Windows x64
+Version: 1.102.3
+Official URL: https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi
+Resolved URL: https://pkgs.tailscale.com/stable/tailscale-setup-1.102.3-amd64.msi
+Downloaded: 2026-09-08
+Size: 38396416 bytes
+SHA-256: 03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE
+Authenticode: Valid
+Signer: Tailscale Inc.
+
+The installer is kept unchanged.  install-tailscale.bat checks both the
+recorded SHA-256 hash and the Windows Authenticode signer before launching it.

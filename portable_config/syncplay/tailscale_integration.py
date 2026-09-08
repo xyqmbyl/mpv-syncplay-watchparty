@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Tailscale setup helpers for the bundled AList watch-party workflow.
+
+This module deliberately stays outside SyncClient and the Syncplay protocol.
+It only reads the local Tailscale daemon, configures Tailscale Serve, and
+updates the mpv panel's local options.  It never creates, reads, or stores a
+Tailscale auth key.
+"""
+
+import argparse
+import datetime
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from urllib.parse import urlsplit, urlunsplit
+
+
+SYNCPLAY_DIR = os.path.dirname(os.path.abspath(__file__))
+PORTABLE_CONFIG_DIR = os.path.dirname(SYNCPLAY_DIR)
+PROJECT_ROOT = os.path.dirname(PORTABLE_CONFIG_DIR)
+DEFAULT_CONFIG = os.path.join(
+    PORTABLE_CONFIG_DIR, "script-opts", "syncplay_ui.conf")
+TAILSCALE_DIR = os.path.join(PROJECT_ROOT, "WatchParty", "Tailscale")
+CONNECTION_FILE = os.path.join(TAILSCALE_DIR, "connection.json")
+TAILSCALE_IPV4 = ipaddress.ip_network("100.64.0.0/10")
+TAILSCALE_IPV6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+DEFAULT_ALIST_PORT = 5244
+INSTALLER_NAME = "tailscale-setup-1.102.3-amd64.msi"
+INSTALLER_PATH = os.path.join(TAILSCALE_DIR, INSTALLER_NAME)
+INSTALLER_SHA256 = "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE"
+
+
+class TailscaleIntegrationError(RuntimeError):
+    pass
+
+
+def _text(value):
+    return str(value or "").strip()
+
+
+def _is_tailscale_ip(host):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.version == 4:
+        return address in TAILSCALE_IPV4
+    return address in TAILSCALE_IPV6
+
+
+def _valid_tsnet_name(host):
+    host = _text(host).rstrip(".").lower()
+    if not host.endswith(".ts.net") or len(host) > 253:
+        return False
+    labels = host.split(".")
+    label_re = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+    return all(label_re.match(label) for label in labels)
+
+
+def _format_host(host):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host.lower()
+    return "[%s]" % address.compressed if address.version == 6 else address.compressed
+
+
+def normalize_host(value):
+    """Return a safe AList origin for a Tailscale IP or full MagicDNS name."""
+    value = _text(value)
+    if not value or any(character.isspace() for character in value):
+        raise ValueError("请输入房主的 Tailscale 地址")
+
+    if "://" not in value:
+        candidate = value.rstrip(".").lower()
+        if _valid_tsnet_name(candidate):
+            return "https://" + candidate
+        if _is_tailscale_ip(candidate):
+            return "http://%s:%d" % (_format_host(candidate), DEFAULT_ALIST_PORT)
+        raise ValueError("地址必须是完整的 .ts.net 名称或 Tailscale 100.x 地址")
+
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("无效的 Tailscale 地址") from exc
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https") or not host:
+        raise ValueError("Tailscale 地址必须使用 HTTP 或 HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Tailscale 地址不能包含账号或密码")
+    if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        raise ValueError("请只填写房主地址，不要附加路径、查询参数或片段")
+    host = host.rstrip(".").lower()
+    is_dns = _valid_tsnet_name(host)
+    if not is_dns and not _is_tailscale_ip(host):
+        raise ValueError("只接受 .ts.net 名称或 Tailscale 专用 IP")
+    if is_dns and scheme != "https":
+        raise ValueError(".ts.net 地址必须使用 HTTPS")
+    if port is None and not is_dns:
+        port = DEFAULT_ALIST_PORT
+    netloc = _format_host(host)
+    if port is not None:
+        default_port = 443 if scheme == "https" else 80
+        if port != default_port:
+            netloc += ":%d" % port
+    return urlunsplit((scheme, netloc, "", "", ""))
+
+
+def locate_tailscale(explicit=None):
+    candidates = []
+    if explicit:
+        candidates.append(os.path.abspath(os.path.expandvars(explicit)))
+    found = shutil.which("tailscale.exe") or shutil.which("tailscale")
+    if found:
+        candidates.append(found)
+    for variable in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA"):
+        base = os.environ.get(variable)
+        if base:
+            candidates.append(os.path.join(base, "Tailscale", "tailscale.exe"))
+    seen = set()
+    for candidate in candidates:
+        key = os.path.normcase(os.path.normpath(candidate))
+        if key not in seen and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+        seen.add(key)
+    return None
+
+
+def _run_cli(cli_path, arguments, timeout=15.0):
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        return subprocess.run(
+            [cli_path] + list(arguments),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=flags,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TailscaleIntegrationError("无法运行 Tailscale：%s" % exc) from exc
+
+
+def extract_status(data, cli_path=None):
+    if not isinstance(data, dict):
+        raise ValueError("Tailscale 状态必须是 JSON 对象")
+    own = data.get("Self") if isinstance(data.get("Self"), dict) else {}
+    raw_ips = data.get("TailscaleIPs")
+    if not isinstance(raw_ips, list):
+        raw_ips = own.get("TailscaleIPs")
+    if not isinstance(raw_ips, list):
+        raw_ips = []
+    ipv4 = None
+    ipv6 = None
+    for raw in raw_ips:
+        try:
+            address = ipaddress.ip_address(_text(raw))
+        except ValueError:
+            continue
+        if address.version == 4 and address in TAILSCALE_IPV4 and ipv4 is None:
+            ipv4 = address.compressed
+        elif address.version == 6 and address in TAILSCALE_IPV6 and ipv6 is None:
+            ipv6 = address.compressed
+    dns_name = _text(own.get("DNSName")).rstrip(".").lower()
+    if dns_name and not _valid_tsnet_name(dns_name):
+        dns_name = ""
+    backend_state = _text(data.get("BackendState")) or "Unknown"
+    return {
+        "installed": True,
+        "cli_path": cli_path or "",
+        "backend_state": backend_state,
+        "online": backend_state.lower() == "running" and bool(ipv4 or ipv6),
+        "ipv4": ipv4 or "",
+        "ipv6": ipv6 or "",
+        "dns_name": dns_name,
+        "error": "",
+    }
+
+
+def query_status(cli_path=None):
+    cli_path = locate_tailscale(cli_path)
+    if cli_path is None:
+        return {
+            "installed": False,
+            "cli_path": "",
+            "backend_state": "NotInstalled",
+            "online": False,
+            "ipv4": "",
+            "ipv6": "",
+            "dns_name": "",
+            "error": "未安装 Tailscale",
+        }
+    result = _run_cli(cli_path, ["status", "--json"])
+    try:
+        data = json.loads(result.stdout or "{}")
+        status = extract_status(data, cli_path)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        detail = _text(result.stderr or result.stdout) or "无法读取服务状态"
+        return {
+            "installed": True,
+            "cli_path": cli_path,
+            "backend_state": "Unknown",
+            "online": False,
+            "ipv4": "",
+            "ipv6": "",
+            "dns_name": "",
+            "error": detail[:500],
+        }
+    if result.returncode != 0:
+        status["error"] = _text(result.stderr)[:500]
+    return status
+
+
+def build_host_configuration(status):
+    if not isinstance(status, dict) or not status.get("installed"):
+        raise ValueError("尚未安装 Tailscale")
+    if _text(status.get("backend_state")).lower() != "running":
+        raise ValueError("Tailscale 尚未登录或未连接")
+    dns_name = _text(status.get("dns_name")).rstrip(".").lower()
+    if not _valid_tsnet_name(dns_name):
+        raise ValueError("Tailscale 尚未提供完整的 .ts.net 名称")
+    return {
+        "alist_enabled": "yes",
+        "alist_server": "https://" + dns_name,
+        "tailscale_mode": "host",
+        "tailscale_host": dns_name,
+    }
+
+
+def build_viewer_configuration(host):
+    origin = normalize_host(host)
+    parsed = urlsplit(origin)
+    return {
+        "alist_enabled": "yes",
+        "alist_server": origin,
+        # A viewer consumes the host's URL and must never publish files from
+        # mappings left behind by a copied host configuration.
+        "alist_root": "",
+        "alist_map": "",
+        "tailscale_mode": "viewer",
+        "tailscale_host": parsed.hostname or "",
+    }
+
+
+def read_syncplay_config(path=DEFAULT_CONFIG):
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as stream:
+            lines = stream.readlines()
+    except FileNotFoundError:
+        return values
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def update_syncplay_config(path, updates):
+    if not isinstance(updates, dict) or not updates:
+        return
+    clean = {}
+    for key, value in updates.items():
+        key = _text(key)
+        value = str(value)
+        if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", key):
+            raise ValueError("无效的配置键：%s" % key)
+        if any(character in value for character in ("\0", "\r", "\n")):
+            raise ValueError("配置值不能包含换行或空字符")
+        clean[key] = value
+
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as stream:
+            original = stream.read()
+    except FileNotFoundError:
+        original = ""
+    newline = "\r\n" if "\r\n" in original else "\n"
+    lines = original.splitlines(keepends=True)
+    remaining = dict(clean)
+    output = []
+    for line in lines:
+        ending = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+        body = line[:-len(ending)] if ending else line
+        match = re.match(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*=", body)
+        key = match.group(1) if match else None
+        if key in remaining:
+            output.append("%s=%s%s" % (key, remaining.pop(key), ending or newline))
+        else:
+            output.append(line)
+    if output and not output[-1].endswith(("\n", "\r")):
+        output[-1] += newline
+    for key, value in remaining.items():
+        output.append("%s=%s%s" % (key, value, newline))
+
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temp_path = tempfile.mkstemp(prefix=".syncplay-ui-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write("".join(output))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _write_connection_file(configuration, path=CONNECTION_FILE):
+    payload = {
+        "schema_version": 1,
+        "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "alist_server": configuration["alist_server"],
+        "tailscale_host": configuration["tailscale_host"],
+        "note": "This file contains no Tailscale login token or AList credential.",
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    descriptor, temp_path = tempfile.mkstemp(prefix=".connection-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def configure_host(config_path=DEFAULT_CONFIG, cli_path=None, configure_serve=True):
+    status = query_status(cli_path)
+    configuration = build_host_configuration(status)
+    if configure_serve:
+        result = _run_cli(status["cli_path"], ["serve", "--bg", str(DEFAULT_ALIST_PORT)], timeout=30.0)
+        if result.returncode != 0:
+            detail = _text(result.stderr or result.stdout) or "Tailscale Serve 配置失败"
+            raise TailscaleIntegrationError(detail[:1000])
+    update_syncplay_config(config_path, configuration)
+    _write_connection_file(configuration)
+    status.update(configuration)
+    status["serve_enabled"] = bool(configure_serve)
+    return status
+
+
+def configure_viewer(host, config_path=DEFAULT_CONFIG, cli_path=None):
+    status = query_status(cli_path)
+    if not status.get("installed"):
+        raise TailscaleIntegrationError("请先安装 Tailscale")
+    if _text(status.get("backend_state")).lower() != "running":
+        raise TailscaleIntegrationError("请先登录并连接 Tailscale")
+    configuration = build_viewer_configuration(host)
+    update_syncplay_config(config_path, configuration)
+    status.update(configuration)
+    return status
+
+
+def open_tailscale(cli_path=None):
+    cli_path = locate_tailscale(cli_path)
+    if cli_path is None:
+        raise TailscaleIntegrationError("尚未安装 Tailscale")
+    ui_path = os.path.join(os.path.dirname(cli_path), "tailscale-ipn.exe")
+    if not os.path.isfile(ui_path):
+        raise TailscaleIntegrationError("找不到 Tailscale 登录界面")
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(
+        [ui_path],
+        close_fds=True,
+        creationflags=flags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"opened": True, "ui_path": ui_path}
+
+
+def verify_installer(path=INSTALLER_PATH):
+    try:
+        with open(path, "rb") as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as exc:
+        raise TailscaleIntegrationError("找不到 Tailscale 安装包：%s" % path) from exc
+    actual = digest.hexdigest().upper()
+    if actual != INSTALLER_SHA256:
+        raise TailscaleIntegrationError("Tailscale 安装包校验失败，已拒绝运行")
+    return {"verified": True, "installer_path": path, "sha256": actual}
+
+
+def _human_status(result):
+    lines = ["[Tailscale WatchParty]"]
+    lines.append("安装：%s" % ("是" if result.get("installed") else "否"))
+    lines.append("状态：%s" % (result.get("backend_state") or "Unknown"))
+    if result.get("ipv4"):
+        lines.append("本机地址：%s" % result["ipv4"])
+    if result.get("dns_name"):
+        lines.append("完整名称：%s" % result["dns_name"])
+    if result.get("alist_server"):
+        lines.append("媒体地址：%s" % result["alist_server"])
+    if result.get("error"):
+        lines.append("错误：%s" % result["error"])
+    return "\n".join(lines)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Tailscale + AList watch-party setup")
+    parser.add_argument("--json", action="store_true", help="输出供 mpv 面板读取的 JSON")
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help="syncplay_ui.conf 路径")
+    parser.add_argument("--cli", default=None, help="tailscale.exe 路径")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("status", help="检查 Tailscale 状态")
+    host = subparsers.add_parser("configure-host", help="配置本机为 AList 房主")
+    host.add_argument("--direct", action="store_true", help="不用 Tailscale Serve（不推荐）")
+    viewer = subparsers.add_parser("configure-viewer", help="配置观看者使用房主地址")
+    viewer.add_argument("host", nargs="?", help="房主完整 .ts.net 名称或 Tailscale IP")
+    subparsers.add_parser("open", help="打开 Tailscale 登录界面")
+    subparsers.add_parser("verify-installer", help="校验项目内的官方安装包")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        if args.command == "status":
+            result = query_status(args.cli)
+            result.update({
+                key: value for key, value in read_syncplay_config(args.config).items()
+                if key in ("alist_server", "tailscale_mode", "tailscale_host")
+            })
+        elif args.command == "configure-host":
+            result = configure_host(args.config, args.cli, not args.direct)
+        elif args.command == "configure-viewer":
+            host = args.host
+            if not host:
+                if not sys.stdin.isatty():
+                    raise TailscaleIntegrationError("缺少房主 Tailscale 地址")
+                host = input("房主的完整 .ts.net 名称或 Tailscale 100.x 地址：").strip()
+            result = configure_viewer(host, args.config, args.cli)
+        elif args.command == "open":
+            result = open_tailscale(args.cli)
+        elif args.command == "verify-installer":
+            result = verify_installer()
+        else:
+            raise TailscaleIntegrationError("未知命令")
+        if args.json:
+            # mpv captures raw subprocess bytes.  ASCII-only JSON remains
+            # parseable even when the embedded Python console uses GBK.
+            print(json.dumps({"ok": True, **result}, ensure_ascii=True))
+        else:
+            print(_human_status(result))
+        return 0
+    except (OSError, ValueError, TailscaleIntegrationError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True))
+        else:
+            print("[Tailscale WatchParty]\n错误：%s" % exc, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
