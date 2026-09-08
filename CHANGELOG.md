@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 - 2026-09-09
+
+- Added clear diagnostics when the host/viewer scripts are run from a source
+  checkout that does not contain the full mpv/Python runtime.
+- Hardened the helper scripts for paths containing `!` when delayed expansion
+  is enabled in the parent `cmd.exe` process.
+- Refreshed the viewer package and checksum after the batch compatibility fixes.
+
 ## 0.1.1 - 2026-09-09
 
 - Fixed Windows `cmd.exe` path and encoding errors in the Tailscale batch helpers;
