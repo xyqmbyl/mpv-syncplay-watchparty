@@ -3,9 +3,9 @@
 """Tailscale setup helpers for the bundled AList watch-party workflow.
 
 This module deliberately stays outside SyncClient and the Syncplay protocol.
-It only reads the local Tailscale daemon, configures Tailscale Serve, and
-updates the mpv panel's local options.  It never creates, reads, or stores a
-Tailscale auth key.
+It only reads the local Tailscale daemon and updates the mpv panel's local
+options for direct Device Sharing access.  It never enables Serve or Funnel,
+and never creates, reads, or stores a Tailscale auth key.
 """
 
 import argparse
@@ -49,14 +49,12 @@ def _text(value):
     return str(value or "").strip()
 
 
-def _is_tailscale_ip(host):
+def _is_tailscale_ipv4(host):
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    if address.version == 4:
-        return address in TAILSCALE_IPV4
-    return address in TAILSCALE_IPV6
+    return address.version == 4 and address in TAILSCALE_IPV4
 
 
 def _valid_tsnet_name(host):
@@ -77,18 +75,17 @@ def _format_host(host):
 
 
 def normalize_host(value):
-    """Return a safe AList origin for a Tailscale IP or full MagicDNS name."""
+    """Return the direct AList origin for a shared Tailscale IPv4 address."""
     value = _text(value)
     if not value or any(character.isspace() for character in value):
-        raise ValueError("请输入房主的 Tailscale 地址")
+        raise ValueError("请输入房主的 Tailscale IPv4 地址（100.x.x.x）")
 
     if "://" not in value:
-        candidate = value.rstrip(".").lower()
-        if _valid_tsnet_name(candidate):
-            return "https://" + candidate
-        if _is_tailscale_ip(candidate):
+        candidate = value.strip()
+        if _is_tailscale_ipv4(candidate):
             return "http://%s:%d" % (_format_host(candidate), DEFAULT_ALIST_PORT)
-        raise ValueError("地址必须是完整的 .ts.net 名称或 Tailscale 100.x 地址")
+        raise ValueError(
+            "地址必须是房主的 Tailscale IPv4（100.64.0.0/10）")
 
     try:
         parsed = urlsplit(value)
@@ -97,26 +94,19 @@ def normalize_host(value):
     except ValueError as exc:
         raise ValueError("无效的 Tailscale 地址") from exc
     scheme = parsed.scheme.lower()
-    if scheme not in ("http", "https") or not host:
-        raise ValueError("Tailscale 地址必须使用 HTTP 或 HTTPS")
+    if scheme != "http" or not host:
+        raise ValueError("Device Sharing 地址必须使用 HTTP")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("Tailscale 地址不能包含账号或密码")
     if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise ValueError("请只填写房主地址，不要附加路径、查询参数或片段")
     host = host.rstrip(".").lower()
-    is_dns = _valid_tsnet_name(host)
-    if not is_dns and not _is_tailscale_ip(host):
-        raise ValueError("只接受 .ts.net 名称或 Tailscale 专用 IP")
-    if is_dns and scheme != "https":
-        raise ValueError(".ts.net 地址必须使用 HTTPS")
-    if port is None and not is_dns:
-        port = DEFAULT_ALIST_PORT
-    netloc = _format_host(host)
-    if port is not None:
-        default_port = 443 if scheme == "https" else 80
-        if port != default_port:
-            netloc += ":%d" % port
-    return urlunsplit((scheme, netloc, "", "", ""))
+    if not _is_tailscale_ipv4(host):
+        raise ValueError("只接受房主的 Tailscale IPv4（100.64.0.0/10）")
+    if port not in (None, DEFAULT_ALIST_PORT):
+        raise ValueError("AList Device Sharing 地址必须使用 5244 端口")
+    netloc = "%s:%d" % (_format_host(host), DEFAULT_ALIST_PORT)
+    return urlunsplit(("http", netloc, "", "", ""))
 
 
 def locate_tailscale(explicit=None):
@@ -242,14 +232,14 @@ def build_host_configuration(status):
         raise ValueError("尚未安装 Tailscale")
     if _text(status.get("backend_state")).lower() != "running":
         raise ValueError("Tailscale 尚未登录或未连接")
-    dns_name = _text(status.get("dns_name")).rstrip(".").lower()
-    if not _valid_tsnet_name(dns_name):
-        raise ValueError("Tailscale 尚未提供完整的 .ts.net 名称")
+    ipv4 = _text(status.get("ipv4"))
+    if not _is_tailscale_ipv4(ipv4):
+        raise ValueError("Tailscale 尚未提供可用的 100.x IPv4 地址")
     return {
         "alist_enabled": "yes",
-        "alist_server": "https://" + dns_name,
+        "alist_server": "http://%s:%d" % (ipv4, DEFAULT_ALIST_PORT),
         "tailscale_mode": "host",
-        "tailscale_host": dns_name,
+        "tailscale_host": ipv4,
     }
 
 
@@ -362,18 +352,13 @@ def _write_connection_file(configuration, path=CONNECTION_FILE):
         raise
 
 
-def configure_host(config_path=DEFAULT_CONFIG, cli_path=None, configure_serve=True):
+def configure_host(config_path=DEFAULT_CONFIG, cli_path=None):
     status = query_status(cli_path)
     configuration = build_host_configuration(status)
-    if configure_serve:
-        result = _run_cli(status["cli_path"], ["serve", "--bg", str(DEFAULT_ALIST_PORT)], timeout=30.0)
-        if result.returncode != 0:
-            detail = _text(result.stderr or result.stdout) or "Tailscale Serve 配置失败"
-            raise TailscaleIntegrationError(detail[:1000])
     update_syncplay_config(config_path, configuration)
     _write_connection_file(configuration)
     status.update(configuration)
-    status["serve_enabled"] = bool(configure_serve)
+    status["device_share"] = "manual"
     return status
 
 
@@ -437,16 +422,16 @@ def _human_status(result):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Tailscale + AList watch-party setup")
+    parser = argparse.ArgumentParser(
+        description="Tailscale Device Sharing + AList watch-party setup")
     parser.add_argument("--json", action="store_true", help="输出供 mpv 面板读取的 JSON")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="syncplay_ui.conf 路径")
     parser.add_argument("--cli", default=None, help="tailscale.exe 路径")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="检查 Tailscale 状态")
-    host = subparsers.add_parser("configure-host", help="配置本机为 AList 房主")
-    host.add_argument("--direct", action="store_true", help="不用 Tailscale Serve（不推荐）")
+    subparsers.add_parser("configure-host", help="配置房主的 Tailscale IPv4 直连地址")
     viewer = subparsers.add_parser("configure-viewer", help="配置观看者使用房主地址")
-    viewer.add_argument("host", nargs="?", help="房主完整 .ts.net 名称或 Tailscale IP")
+    viewer.add_argument("host", nargs="?", help="房主 Tailscale IPv4（100.x.x.x）")
     subparsers.add_parser("open", help="打开 Tailscale 登录界面")
     subparsers.add_parser("verify-installer", help="校验项目内的官方安装包")
     return parser.parse_args(argv)
@@ -462,13 +447,13 @@ def main(argv=None):
                 if key in ("alist_server", "tailscale_mode", "tailscale_host")
             })
         elif args.command == "configure-host":
-            result = configure_host(args.config, args.cli, not args.direct)
+            result = configure_host(args.config, args.cli)
         elif args.command == "configure-viewer":
             host = args.host
             if not host:
                 if not sys.stdin.isatty():
                     raise TailscaleIntegrationError("缺少房主 Tailscale 地址")
-                host = input("房主的完整 .ts.net 名称或 Tailscale 100.x 地址：").strip()
+                host = input("房主的 Tailscale IPv4 地址（100.x.x.x）：").strip()
             result = configure_viewer(host, args.config, args.cli)
         elif args.command == "open":
             result = open_tailscale(args.cli)

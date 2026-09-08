@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0 - 2026-09-09
+
+- Added a complete portable host package with mpv, embedded Python, Syncplay,
+  AList v3.64.0, first-run setup, launch helpers, licenses, and reproducible
+  package manifests.
+- Standardized remote media access on Tailscale Device Sharing and direct
+  `http://100.x.x.x:5244` URLs while keeping Funnel and Serve disabled.
+- Added host automation for AList startup, `0.0.0.0:5244`, `/media`, anonymous
+  guest access, signing removal, Tailscale address discovery, and Range 206
+  verification.
+- Added viewer-side diagnostics which distinguish installation, login, Device
+  Share, TCP 5244, `/ping`, guest, signing, and HTTP Range failures in Chinese.
+- Added clean-install and repeat-run coverage, including preservation of an
+  existing administrator password and `alist_map` configuration.
+- Fixed the AList v3 setting-save request used by a completely new database.
+- Updated the two-person quick-start documentation and host/viewer packaging
+  audits.
+
 ## 0.1.2 - 2026-09-09
 
 - Added clear diagnostics when the host/viewer scripts are run from a source

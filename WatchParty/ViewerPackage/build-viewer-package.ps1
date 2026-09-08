@@ -2,6 +2,7 @@
 param(
     [string]$OutputDirectory = "",
     [string]$PackageName = "MPV-Syncplay-Viewer",
+    # 房主地址：Device Sharing 后可访问的 Tailscale IPv4。
     [Parameter(Mandatory = $true)]
     [string]$TailscaleHost
 )
@@ -19,10 +20,21 @@ $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 if ($PackageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
     throw "PackageName 只能包含英文字母、数字、点、下划线和连字符。"
 }
-$normalizedHost = $TailscaleHost.Trim().TrimEnd('.').ToLowerInvariant()
-if ($normalizedHost -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$') {
-    throw "TailscaleHost 必须是完整的 .ts.net 主机名。"
+$normalizedHost = $TailscaleHost.Trim()
+$parsedIp = $null
+$isIpv4 = [Net.IPAddress]::TryParse($normalizedHost, [ref]$parsedIp) -and
+    $parsedIp.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork
+$isTailnetIp = $false
+if ($isIpv4) {
+    $octets = $parsedIp.GetAddressBytes()
+    $isTailnetIp = $octets[0] -eq 100 -and $octets[1] -ge 64 -and $octets[1] -le 127
 }
+if (-not $isTailnetIp) {
+    throw "TailscaleHost 必须是房主的 Tailscale IPv4（100.64.0.0/10）。"
+}
+$normalizedHost = $parsedIp.ToString()
+# Device Sharing 直连 AList；构建器不会配置 Tailscale Serve 或 Funnel。
+$alistOrigin = "http://{0}:{1}" -f $normalizedHost, 5244
 
 $stagePath = [IO.Path]::GetFullPath((Join-Path $outputRoot $PackageName))
 $zipPath = [IO.Path]::GetFullPath((Join-Path $outputRoot ($PackageName + ".zip")))
@@ -75,7 +87,7 @@ New-Item -ItemType Directory -Path $stagePath -Force | Out-Null
 $rootFiles = @(
     'mpv.exe', 'mpv.com',
     'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
-    'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll',
+    'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll', 'sqlite3.dll',
     'concrt140.dll',
     'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
@@ -86,7 +98,7 @@ foreach ($name in $rootFiles) {
 }
 $pythonExtensions = @(
     '_hashlib.pyd', '_overlapped.pyd', '_queue.pyd', '_socket.pyd', '_ssl.pyd',
-    'select.pyd', 'unicodedata.pyd'
+    '_sqlite3.pyd', 'select.pyd', 'unicodedata.pyd'
 )
 foreach ($name in $pythonExtensions) {
     Copy-PackageFile (Join-Path $projectRoot $name) $name
@@ -99,6 +111,7 @@ foreach ($relative in @(
     'syncplay\media_provider.py',
     'syncplay\alist_diagnostics.py',
     'syncplay\tailscale_integration.py',
+    'syncplay\watchparty_setup.py',
     'fonts\MaterialIconsRound-Regular.otf',
     'fonts\uosc_textures.ttf'
 )) {
@@ -129,6 +142,7 @@ foreach ($templateName in @(
         throw "缺少模板：$templatePath"
     }
     $content = [IO.File]::ReadAllText($templatePath, [Text.Encoding]::UTF8)
+    $content = $content.Replace('__ALIST_ORIGIN__', $alistOrigin)
     $content = $content.Replace('__TAILSCALE_HOST__', $normalizedHost)
     $destinationName = $templateName
     if ($templateName -eq 'mpv.conf') {
@@ -147,13 +161,34 @@ Get-ChildItem -LiteralPath $licenseSource -File -Force | ForEach-Object {
     Copy-PackageFile $_.FullName (Join-Path 'THIRD_PARTY_LICENSES' $_.Name)
 }
 
+# cmd.exe 对混合换行尤其敏感。无论源码编辑器使用何种换行，Release 中
+# 所有批处理都固定为 UTF-8 无 BOM + CRLF。
+$batchFiles = Get-ChildItem -LiteralPath $stagePath -Filter '*.bat' -File -Recurse -Force
+foreach ($file in $batchFiles) {
+    $content = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8)
+    $normalized = $content.Replace("`r`n", "`n").Replace("`r", "`n").Replace("`n", "`r`n")
+    [IO.File]::WriteAllText($file.FullName, $normalized, $utf8)
+}
+foreach ($file in $batchFiles) {
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and
+            $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        throw "审计失败，批处理包含 UTF-8 BOM：$($file.FullName)"
+    }
+    $content = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8)
+    if ($content -match '(?<!\r)\n|\r(?!\n)') {
+        throw "审计失败，批处理没有统一使用 CRLF：$($file.FullName)"
+    }
+}
+
 $requiredFiles = @(
-    'mpv.exe', 'python.exe', 'python314.zip',
+    'mpv.exe', 'python.exe', 'python314.zip', '_sqlite3.pyd', 'sqlite3.dll',
     'portable_config\scripts\syncplay_ui.lua',
     'portable_config\syncplay\mpv_syncplay.py',
     'portable_config\syncplay\media_provider.py',
     'portable_config\syncplay\alist_diagnostics.py',
     'portable_config\syncplay\tailscale_integration.py',
+    'portable_config\syncplay\watchparty_setup.py',
     'portable_config\script-opts\syncplay_ui.conf',
     'WatchParty\Tailscale\tailscale-setup-1.102.3-amd64.msi',
     '观看者首次运行.bat', '启动观看.bat', '观看者使用说明.md',
@@ -204,7 +239,7 @@ foreach ($file in $packagedFiles) {
 $viewerConfig = Get-Content -LiteralPath (Join-Path $stagePath 'portable_config\script-opts\syncplay_ui.conf')
 $expectedConfig = @{
     'alist_enabled' = 'yes'
-    'alist_server' = 'https://' + $normalizedHost
+    'alist_server' = $alistOrigin
     'alist_root' = ''
     'alist_map' = ''
     'tailscale_mode' = 'viewer'
@@ -231,7 +266,7 @@ if ($mpvConfigText -match '(?m)^\s*vf-pre\s*=' -or
     throw "审计失败，观看者包仍启用了房主 VapourSynth/TensorRT 滤镜。"
 }
 
-& (Join-Path $stagePath 'python.exe') -c "import argparse, hashlib, json, socket, ssl, threading, urllib.request; print('Python runtime OK')"
+& (Join-Path $stagePath 'python.exe') -c "import argparse, hashlib, json, socket, sqlite3, ssl, threading, urllib.request; print('Python runtime OK')"
 if ($LASTEXITCODE -ne 0) { throw "观看者包内 Python 运行时验证失败。" }
 & (Join-Path $stagePath 'python.exe') (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py') --json verify-installer | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "观看者包内 Tailscale 安装包验证失败。" }

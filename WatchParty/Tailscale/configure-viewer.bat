@@ -37,7 +37,8 @@ if defined VIEWER_HOST (
 set "VIEWER_RESULT=%ERRORLEVEL%"
 echo.
 if not "%VIEWER_RESULT%"=="0" (
-    echo 请确认已登录 Tailscale，并填写房主提供的完整地址。
+    echo 请确认已登录 Tailscale、已接受房主设备共享，
+    echo 并填写房主提供的 100.x.x.x 地址。
 ) else (
     echo 观看者配置已保存。请重新启动 mpv 后进入相同 Syncplay 房间。
 )

@@ -272,14 +272,14 @@ local function apply_tailscale_payload(payload)
     }) do
         if payload[key] ~= nil then tailscale_state[key] = payload[key] end
     end
-    if payload.alist_server and payload.alist_server ~= "" then
-        options.alist_server = tostring(payload.alist_server)
-    end
-    if payload.tailscale_mode and payload.tailscale_mode ~= "" then
-        options.tailscale_mode = tostring(payload.tailscale_mode)
-    end
-    if payload.tailscale_host and payload.tailscale_host ~= "" then
-        options.tailscale_host = tostring(payload.tailscale_host)
+    -- Viewer configuration intentionally clears publishing mappings.  Apply
+    -- empty values too, otherwise this mpv process could keep stale host paths
+    -- in memory until it is restarted.
+    for _, key in ipairs({
+        "alist_server", "alist_root", "alist_virtual_root", "alist_map",
+        "tailscale_mode", "tailscale_host",
+    }) do
+        if payload[key] ~= nil then options[key] = tostring(payload[key]) end
     end
 end
 
@@ -335,6 +335,10 @@ local function stop_for_tailscale_change()
 end
 
 local function configure_tailscale_host()
+    if trim(options.tailscale_mode):lower() ~= "host" then
+        notify("当前不是房主配置，已拒绝改写房主媒体地址")
+        return
+    end
     run_tailscale_helper({"configure-host"}, function(ok, payload, detail)
         if not ok then
             tailscale_state.error = detail
@@ -342,16 +346,20 @@ local function configure_tailscale_host()
             return
         end
         if not stop_for_tailscale_change() then
-            notify("房主安全媒体地址已配置")
+            notify("房主 100.x 媒体地址已配置；请在后台手动 Share 设备")
         end
         apply_tailscale_payload(payload)
     end)
 end
 
 local function configure_tailscale_viewer(host)
+    if trim(options.tailscale_mode):lower() ~= "viewer" then
+        notify("仅观看者配置可以填写房主地址")
+        return
+    end
     host = trim(host)
     if host == "" then
-        notify("请输入房主的完整 .ts.net 地址")
+        notify("请输入房主的 Tailscale 100.x 地址")
         return
     end
     run_tailscale_helper({"configure-viewer", host}, function(ok, payload, detail)
@@ -810,8 +818,11 @@ local function build_tailscale_items()
         items[#items + 1] = {title = "安装 Tailscale", icon = "download",
             value = action_value("tailscale-install")}
     end
-    items[#items + 1] = {title = "房主：启用安全共享", hint = "Tailscale Serve · HTTPS",
-        icon = "security", value = action_value("tailscale-host")}
+    if trim(options.tailscale_mode):lower() == "host" then
+        items[#items + 1] = {title = "房主：写入共享地址",
+            hint = "Device Sharing · 100.x:5244",
+            icon = "security", value = action_value("tailscale-host")}
+    end
     items[#items + 1] = {title = "刷新状态", icon = "refresh",
         value = action_value("tailscale-refresh")}
     return items
@@ -879,10 +890,12 @@ local function build_items()
             title = "Tailscale",
             hint = select(1, tailscale_status_label()),
             icon = "vpn_lock",
-            search_style = "palette",
+            search_style = trim(options.tailscale_mode):lower() == "viewer" and
+                "palette" or "disabled",
             search_debounce = "submit",
             search_suggestion = tostring(options.tailscale_host or ""),
-            on_search = {"script-message-to", script_name, "syncplay-tailscale-host-submit"},
+            on_search = trim(options.tailscale_mode):lower() == "viewer" and
+                {"script-message-to", script_name, "syncplay-tailscale-host-submit"} or nil,
             items = build_tailscale_items(),
         },
         {separator = true, selectable = false},
@@ -960,6 +973,10 @@ mp.register_script_message("syncplay-input-submit", function(kind, query, _menu_
 end)
 
 mp.register_script_message("syncplay-tailscale-host-submit", function(query, _menu_id)
+    if trim(options.tailscale_mode):lower() ~= "viewer" then
+        notify("当前不是观看者配置，已忽略房主地址输入")
+        return
+    end
     configure_tailscale_viewer(query)
 end)
 

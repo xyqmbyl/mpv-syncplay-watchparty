@@ -31,7 +31,12 @@ echo.
 if not "%TS_RESULT%"=="0" (
     echo 请先完成 Tailscale 登录，再重试。
 ) else (
-    echo 房主配置已保存。请重新启动 mpv 后打开 Syncplay 面板。
+    echo 房主配置已保存为 Tailscale IPv4 直连地址。
+    echo.
+    echo 还需要手动完成一次设备共享：
+    echo Tailscale Admin Console ^> Machines ^> 房主设备 ^> Share
+    echo 本工具不会启用 Tailscale Serve 或 Funnel。
+    echo 完成后请重新启动 mpv 并打开 Syncplay 面板。
 )
 pause
 exit /b %TS_RESULT%

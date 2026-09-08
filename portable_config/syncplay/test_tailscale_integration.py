@@ -42,16 +42,6 @@ def _status_payload():
 
 
 class NormalizeHostTests(unittest.TestCase):
-    def test_full_magicdns_name_becomes_https_origin(self):
-        self.assertEqual(
-            tailscale.normalize_host(DNS_NAME.upper() + "."),
-            "https://" + DNS_NAME,
-        )
-        self.assertEqual(
-            tailscale.normalize_host("https://%s./" % DNS_NAME.upper()),
-            "https://" + DNS_NAME,
-        )
-
     def test_tailscale_ipv4_becomes_direct_alist_origin(self):
         self.assertEqual(
             tailscale.normalize_host(TAILSCALE_IPV4),
@@ -71,10 +61,6 @@ class NormalizeHostTests(unittest.TestCase):
             tailscale.normalize_host("http://%s:5244/" % TAILSCALE_IPV4),
             "http://%s:5244" % TAILSCALE_IPV4,
         )
-        self.assertEqual(
-            tailscale.normalize_host("https://%s:443/" % DNS_NAME.upper()),
-            "https://" + DNS_NAME,
-        )
 
     def test_credentials_query_paths_and_non_tailscale_hosts_are_rejected(self):
         invalid_values = (
@@ -83,6 +69,9 @@ class NormalizeHostTests(unittest.TestCase):
             "https://%s/#fragment" % DNS_NAME,
             "https://%s/d/media/movie.mkv" % DNS_NAME,
             "http://%s/" % DNS_NAME,
+            DNS_NAME,
+            "https://%s/" % TAILSCALE_IPV4,
+            "http://%s:8080/" % TAILSCALE_IPV4,
             "https://alist.example.com/",
             "watch-host",
             "192.168.1.20",
@@ -210,8 +199,8 @@ class SyncplayConfigUpdateTests(unittest.TestCase):
         updates = {
             "alist_enabled": "yes",
             "tailscale_mode": "viewer",
-            "tailscale_host": DNS_NAME,
-            "alist_server": "https://" + DNS_NAME,
+            "tailscale_host": TAILSCALE_IPV4,
+            "alist_server": "http://%s:5244" % TAILSCALE_IPV4,
         }
 
         with tempfile.TemporaryDirectory() as directory:
@@ -233,9 +222,10 @@ class SyncplayConfigUpdateTests(unittest.TestCase):
             self.assertIn("# Keep this comment\r\n", text)
             self.assertIn("room_setting=keep-me\r\n", text)
             self.assertIn("alist_enabled=yes\r\n", text)
-            self.assertIn("alist_server=https://%s\r\n" % DNS_NAME, text)
+            self.assertIn(
+                "alist_server=http://%s:5244\r\n" % TAILSCALE_IPV4, text)
             self.assertIn("tailscale_mode=viewer\r\n", text)
-            self.assertIn("tailscale_host=%s\r\n" % DNS_NAME, text)
+            self.assertIn("tailscale_host=%s\r\n" % TAILSCALE_IPV4, text)
             self.assertNotIn("alist_enabled=no", text)
             self.assertNotIn("http://127.0.0.1:5244", text)
             self.assertFalse(Path(temp_path).exists())
@@ -286,31 +276,21 @@ class SyncplayConfigUpdateTests(unittest.TestCase):
 
 
 class ConfigurationBuilderTests(unittest.TestCase):
-    def test_host_configuration_prefers_full_dns_name_and_https(self):
+    def test_host_configuration_uses_direct_tailscale_ipv4(self):
         status = tailscale.extract_status(_status_payload(), "tailscale.exe")
 
         configuration = tailscale.build_host_configuration(status)
 
         self.assertEqual(configuration, {
             "alist_enabled": "yes",
-            "alist_server": "https://" + DNS_NAME,
+            "alist_server": "http://%s:5244" % TAILSCALE_IPV4,
             "tailscale_mode": "host",
-            "tailscale_host": DNS_NAME,
+            "tailscale_host": TAILSCALE_IPV4,
         })
 
-    def test_viewer_configuration_from_magicdns_name(self):
-        configuration = tailscale.build_viewer_configuration(
-            "https://%s./" % DNS_NAME.upper()
-        )
-
-        self.assertEqual(configuration, {
-            "alist_enabled": "yes",
-            "alist_server": "https://" + DNS_NAME,
-            "alist_root": "",
-            "alist_map": "",
-            "tailscale_mode": "viewer",
-            "tailscale_host": DNS_NAME,
-        })
+    def test_viewer_configuration_rejects_magicdns_serve_address(self):
+        with self.assertRaises(ValueError):
+            tailscale.build_viewer_configuration("https://%s" % DNS_NAME)
 
     def test_viewer_configuration_from_tailscale_ipv4(self):
         configuration = tailscale.build_viewer_configuration(TAILSCALE_IPV4)
@@ -334,7 +314,7 @@ class ConfigurationBuilderTests(unittest.TestCase):
                 encoding="utf-8",
             )
             tailscale.update_syncplay_config(
-                path, tailscale.build_viewer_configuration(DNS_NAME)
+                path, tailscale.build_viewer_configuration(TAILSCALE_IPV4)
             )
 
             values = tailscale.read_syncplay_config(path)
@@ -342,16 +322,16 @@ class ConfigurationBuilderTests(unittest.TestCase):
             self.assertEqual(values["alist_map"], "")
             self.assertEqual(values["tailscale_mode"], "viewer")
 
-    def test_host_configuration_requires_running_tailscale_and_full_dns(self):
+    def test_host_configuration_requires_running_tailscale_and_ipv4(self):
         invalid_statuses = (
             {},
-            {"installed": False, "backend_state": "Running", "dns_name": DNS_NAME},
-            {"installed": True, "backend_state": "Stopped", "dns_name": DNS_NAME},
-            {"installed": True, "backend_state": "Running", "dns_name": ""},
+            {"installed": False, "backend_state": "Running", "ipv4": TAILSCALE_IPV4},
+            {"installed": True, "backend_state": "Stopped", "ipv4": TAILSCALE_IPV4},
+            {"installed": True, "backend_state": "Running", "ipv4": ""},
             {
                 "installed": True,
                 "backend_state": "Running",
-                "dns_name": "short-host",
+                "ipv4": "192.168.1.20",
             },
         )
 
@@ -360,12 +340,30 @@ class ConfigurationBuilderTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     tailscale.build_host_configuration(status)
 
+    def test_configure_host_never_invokes_serve_or_funnel(self):
+        status = tailscale.extract_status(_status_payload(), "tailscale.exe")
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(tailscale, "query_status", return_value=status), \
+                mock.patch.object(tailscale, "_write_connection_file"), \
+                mock.patch.object(tailscale, "_run_cli") as run_mock:
+            config = Path(directory, "syncplay_ui.conf")
+            result = tailscale.configure_host(config)
+
+        run_mock.assert_not_called()
+        self.assertEqual(
+            result["alist_server"],
+            "http://%s:5244" % TAILSCALE_IPV4,
+        )
+        self.assertEqual(result["device_share"], "manual")
+
 
 class BatchFileCompatibilityTests(unittest.TestCase):
-    """Keep Windows helper scripts directly executable from Explorer/cmd.exe."""
+    """Keep Windows entry scripts directly executable from Explorer/cmd.exe."""
 
     def test_batch_helpers_are_utf8_without_bom_and_use_crlf(self):
         relative_paths = (
+            "WatchParty/房主首次运行.bat",
+            "WatchParty/启动.bat",
             "WatchParty/Tailscale/configure-host.bat",
             "WatchParty/Tailscale/configure-viewer.bat",
             "WatchParty/Tailscale/install-tailscale.bat",

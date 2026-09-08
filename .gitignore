@@ -1,6 +1,8 @@
 # Runtime state and private host data
-WatchParty/alist/
-WatchParty/media/
+WatchParty/alist/alist.exe
+WatchParty/alist/data/
+WatchParty/media/*
+!WatchParty/media/README.txt
 WatchParty/Tailscale/connection.json
 WatchParty/Tailscale/*.msi
 WatchParty/ViewerPackage/output/
