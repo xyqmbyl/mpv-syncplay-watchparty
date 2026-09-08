@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 - 2026-09-08
+## 0.1.1 - 2026-09-09
 
 - Fixed Windows `cmd.exe` path and encoding errors in the Tailscale batch helpers;
   they are now UTF-8 without a BOM and use CRLF line endings for reliable
