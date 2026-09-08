@@ -6,27 +6,47 @@ projects. The corresponding license texts are in THIRD_PARTY_LICENSES.
 
 mpv
   Version: v0.40.0-489-g95c7599c4
-  Source: https://github.com/mpv-player/mpv/commit/95c7599c4
+  Binary SHA-256: 63AAC180F1495EAA72E2508C57A72640805191CA37B4766CBA6BE8412E89215F
+  Distribution provenance: the version and surrounding configuration match
+    MPV_lazy 20260000:
+    https://github.com/hooke007/mpv_PlayKit/releases/tag/20260000
+  mpv source: https://github.com/mpv-player/mpv/commit/95c7599c41a4c7e332848fdb7e594650c1564e45
+  FFmpeg source: https://github.com/FFmpeg/FFmpeg/commit/ec0173ab59e9927a27a959c8c4706cd5316d0560
+  libplacebo source: https://code.videolan.org/videolan/libplacebo/-/commit/45f76a46aaf2958febff2a482a059151b480bf99
+  Build system reference: https://github.com/shinchiro/mpv-winbuild-cmake/commit/9f205aad6e5d5d1585c7fcc98b9d31b06826dfdf
   License: GPL-2.0-or-later (conservative classification because the exact
-           build flags of this existing Windows binary are not recorded)
+           custom build flags and full dependency lock are not recorded)
   The binary also contains FFmpeg and other libraries listed by `mpv --version`.
   See mpv-Copyright.txt for mpv's detailed licensing and component notes.
 
 Python
   Version: 3.14.2 embedded Windows runtime
   Source: https://www.python.org/downloads/release/python-3142/
-  Source code: https://github.com/python/cpython/tree/v3.14.2
+  Source code: https://github.com/python/cpython/commit/df793163d5821791d4e7caf88885a2c11a107986
   License: Python Software Foundation License Version 2
 
 OpenSSL
   Version: 3.0.18 (used by the embedded Python HTTPS client)
-  Source: https://github.com/openssl/openssl/tree/openssl-3.0.18
+  Source: https://github.com/openssl/openssl/commit/c10e643222ce5a185f2980d7352d545afacb0fed
   License: Apache License 2.0
 
 uosc
   Version: 5.12.0
   Source: https://github.com/tomasklaen/uosc/commit/0c8ca8b832270adee7684db6472c86f7aba2b170
   License: LGPL-2.1
+
+uosc Ziggy helper
+  Binary: portable_config/scripts/uosc/bin/ziggy-windows.exe
+  SHA-256: AB76A5A059EF0AEF0F54DC317E31EAE25CC5B7E3840F81CBF98B1AB07A96F636
+  Source: https://github.com/tomasklaen/uosc/tree/0c8ca8b832270adee7684db6472c86f7aba2b170/src/ziggy
+  License: LGPL-2.1
+  Statically linked Go dependencies:
+    github.com/atotto/clipboard v0.1.4 - BSD-3-Clause
+    github.com/pkg/browser 5ac0b6a4141c - BSD-2-Clause
+    golang.org/x/sys v0.28.0 - BSD-3-Clause
+    Go standard library 1.23.1 - BSD-3-Clause
+  Their license texts are the four Ziggy-prefixed files in
+  THIRD_PARTY_LICENSES.
 
 Material Icons
   Asset: MaterialIconsRound-Regular.otf
@@ -36,7 +56,7 @@ Material Icons
 Tailscale
   Installer version: 1.102.3
   Installer: https://pkgs.tailscale.com/stable/tailscale-setup-1.102.3-amd64.msi
-  Source: https://github.com/tailscale/tailscale/tree/v1.102.3
+  Source: https://github.com/tailscale/tailscale/commit/53a0d659afa51835dd7a9283873cca44261454f8c
   License for the open-source Tailscale code: BSD-3-Clause
 
 Microsoft Visual C++ runtime files

@@ -164,7 +164,11 @@ $requiredFiles = @(
     'THIRD_PARTY_LICENSES\OpenSSL-3.0.18.txt',
     'THIRD_PARTY_LICENSES\uosc-LGPL-2.1.txt',
     'THIRD_PARTY_LICENSES\Tailscale-BSD-3-Clause.txt',
-    'THIRD_PARTY_LICENSES\Material-Icons-Apache-2.0.txt'
+    'THIRD_PARTY_LICENSES\Material-Icons-Apache-2.0.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-atotto-clipboard-BSD-3-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-pkg-browser-BSD-2-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-golang-x-sys-BSD-3-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-Go-BSD-3-Clause.txt'
 )
 foreach ($relative in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $stagePath $relative) -PathType Leaf)) {
