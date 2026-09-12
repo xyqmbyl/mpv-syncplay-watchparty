@@ -432,12 +432,23 @@ class MpvPlayer:
         self._checked_submit(["loadfile", url, "replace"], "loadfile ", timeout=10.0)
 
     def is_media_ready(self, url):
-        """mpv 已切到目标 URL、离开 idle 且产生时间轴后才算加载完成。"""
+        """确认 mpv 已建立目标媒体，而不是只看 ``time-pos``。
+
+        部分容器在暂停状态下会先完成 demux/轨道初始化，但暂时不提供
+        ``time-pos``。旧逻辑会把这种合法状态误判为未加载，观看者随后
+        一直显示黑屏直到 ready 超时。
+        """
         if media_url_key(self.current_path()) != media_url_key(url):
             return False
         if self._simple_get("idle-active") is True:
             return False
-        return self._simple_get("time-pos") is not None
+        if self._simple_get("time-pos") is not None:
+            return True
+        duration = self._simple_get("duration")
+        if finite_number(duration) and float(duration) > 0:
+            return True
+        tracks = self._simple_get("track-list")
+        return isinstance(tracks, list) and bool(tracks)
 
     def is_alive(self):
         return not self._dead.is_set()

@@ -270,6 +270,25 @@ class MediaProviderTests(unittest.TestCase):
 
 
 class VirtualPlayerContractTests(unittest.TestCase):
+    def test_mpv_ready_accepts_paused_demux_without_time_pos(self):
+        player = object.__new__(syncplay.MpvPlayer)
+        player.current_path = lambda: MEDIA_URL
+        values = {
+            "idle-active": False,
+            "time-pos": None,
+            "duration": 120.0,
+            "track-list": [],
+        }
+        player._simple_get = lambda prop: values.get(prop)
+        self.assertTrue(player.is_media_ready(MEDIA_URL))
+
+        values["duration"] = None
+        values["track-list"] = [{"type": "video", "selected": True}]
+        self.assertTrue(player.is_media_ready(MEDIA_URL))
+
+        values["track-list"] = []
+        self.assertFalse(player.is_media_ready(MEDIA_URL))
+
     def test_virtual_player_exposes_remote_load_state(self):
         player = syncplay.VirtualPlayer(paused=True, name="old.mkv")
         self.assertTrue(callable(getattr(player, "current_path", None)))

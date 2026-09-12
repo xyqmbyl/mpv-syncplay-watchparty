@@ -47,3 +47,6 @@
 - Added Tailscale host/viewer setup helpers.
 - Added a minimal, audited Windows viewer package builder.
 - Fixed typed mpv IPC property writes for pause, speed, cache, and read-ahead.
+## Unreleased
+
+- 修复观看者在暂停加载阶段没有 `time-pos` 时被误判为未就绪，导致房主开始播放后观看者仍黑屏的问题。现在会同时检查 mpv 的媒体时长和已建立的音视频轨道。
