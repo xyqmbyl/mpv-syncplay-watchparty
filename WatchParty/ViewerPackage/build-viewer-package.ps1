@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
     [string]$PackageName = "MPV-Syncplay-Viewer",
@@ -123,6 +123,19 @@ Get-ChildItem -LiteralPath $uoscSource -File -Recurse -Force | ForEach-Object {
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc' $relative)
 }
 
+# 弹幕插件 uosc_danmaku（定制版）：纯本地 OSD 覆盖层，只读取本机 time-pos，
+# 不参与 Syncplay 的播放/暂停/跳转同步，房主与观看者可各自独立开关。
+# 观看者包与房主包内容一致，只复制插件代码，不携带本机弹幕历史。
+$danmakuSource = Join-Path $portableSource 'scripts\uosc_danmaku'
+Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object {
+    $relative = Get-RelativePath $danmakuSource $_.FullName
+    $topLevel = $relative.Split('\')[0]
+    if (@('.github', '.gitignore', '.gitattributes') -contains $topLevel) {
+        return
+    }
+    Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc_danmaku' $relative)
+}
+
 $tailscaleSource = Join-Path $projectRoot 'WatchParty\Tailscale'
 foreach ($name in @(
     'tailscale-setup-1.102.3-amd64.msi', 'install-tailscale.bat',
@@ -190,6 +203,11 @@ $requiredFiles = @(
     'portable_config\syncplay\tailscale_integration.py',
     'portable_config\syncplay\watchparty_setup.py',
     'portable_config\script-opts\syncplay_ui.conf',
+    'portable_config\scripts\uosc_danmaku\main.lua',
+    'portable_config\scripts\uosc_danmaku\apis\dandanplay.lua',
+    'portable_config\scripts\uosc_danmaku\modules\options.lua',
+    'portable_config\scripts\uosc_danmaku\modules\render.lua',
+    'portable_config\scripts\uosc_danmaku\modules\style.lua',
     'WatchParty\Tailscale\tailscale-setup-1.102.3-amd64.msi',
     '观看者首次运行.bat', '启动观看.bat', '观看者使用说明.md',
     'THIRD_PARTY_NOTICES.txt',
@@ -198,6 +216,7 @@ $requiredFiles = @(
     'THIRD_PARTY_LICENSES\Python-3.14.2.txt',
     'THIRD_PARTY_LICENSES\OpenSSL-3.0.18.txt',
     'THIRD_PARTY_LICENSES\uosc-LGPL-2.1.txt',
+    'THIRD_PARTY_LICENSES\uosc_danmaku-MIT.txt',
     'THIRD_PARTY_LICENSES\Tailscale-BSD-3-Clause.txt',
     'THIRD_PARTY_LICENSES\Material-Icons-Apache-2.0.txt',
     'THIRD_PARTY_LICENSES\Ziggy-atotto-clipboard-BSD-3-Clause.txt',

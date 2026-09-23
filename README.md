@@ -6,7 +6,9 @@ Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增�
 - mpv 内置的简洁二级侧边栏控制面板；
 - 房主本地路径到 AList `/d/...` 公开播放地址的映射；
 - 观看者自动载入远程视频、HTTP Range 检测和 READY 等待；
-- Tailscale 私网接入与观看者首次运行向导。
+- Tailscale 私网接入与观看者首次运行向导；
+- 内置弹幕插件 uosc_danmaku，房主与观看者可各自独立开关（默认字号 35、
+  显示范围 0.4，样式修改后自动保存为新的默认值）。
 
 项目不会把 AList 管理员 Token、Cookie 或 Tailscale 登录凭据发送给观看者。
 
@@ -66,6 +68,23 @@ Python、AList 和首次运行所需组件。
 `Ctrl+Y` 不是本项目的面板快捷键。完整部署、AList 后台设置和诊断命令见
 [`portable_config/syncplay/README.md`](portable_config/syncplay/README.md)。
 
+## 弹幕（房主与观看者各自独立）
+
+两个安装包都内置弹幕插件 `uosc_danmaku`，入口在 mpv 下方的 uosc 控制栏：
+`弹幕开关`、`搜索弹幕`、`从源添加弹幕`、`弹幕设置`，也可以按 `j` 直接开关，
+按 `Ctrl+d` 打开搜索菜单。
+
+- 弹幕完全在本地渲染：插件只读取本机 mpv 的播放进度，不通过 Syncplay 发送
+  任何数据。谁打开弹幕，就只有谁看到；两端互不影响。
+- 弹幕跟随本机播放进度：暂停时弹幕冻结，继续播放或跳转后会重新对齐当前
+  时间点，因此始终与房主的视频进度一致。
+- 默认样式为字号 `35`、显示范围 `0.4`。在 `弹幕设置` 中修改任意样式后，
+  改动会立刻写入 `portable_config\script-opts\uosc_danmaku.conf` 并成为新的
+  默认值，下次启动仍然生效；“恢复默认”会删除该项并回到内置默认值。
+- 本插件是从上游定制的版本（默认值与自动保存行为是本项目的改动）。如果
+  在插件菜单里使用“检查更新”，上游版本会覆盖这些定制改动，覆盖后默认字号
+  会回到上游数值，需要重新设置一次。
+
 ## 验证
 
 运行标准库测试：
@@ -108,5 +127,6 @@ python portable_config\syncplay\test_mpv_ipc_real.py -v
 ## 许可
 
 本仓库原创整合代码采用根目录所示的保留权利声明。mpv、Python、OpenSSL、
-uosc、Material Icons、Tailscale 等第三方组件不受该声明覆盖；版本、来源和
-许可证见 `WatchParty/ViewerPackage/templates/THIRD_PARTY_NOTICES.txt`。
+uosc、uosc_danmaku、Material Icons、Tailscale 等第三方组件不受该声明覆盖；
+版本、来源和许可证见
+`WatchParty/ViewerPackage/templates/THIRD_PARTY_NOTICES.txt`。

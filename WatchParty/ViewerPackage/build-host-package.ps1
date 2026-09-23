@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
     [string]$PackageName = "MPV-Syncplay-Host"
@@ -110,6 +110,19 @@ Get-ChildItem -LiteralPath $uoscSource -File -Recurse -Force | ForEach-Object {
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc' $relative)
 }
 
+# 弹幕插件 uosc_danmaku（定制版）：纯本地 OSD 覆盖层，只读取本机 time-pos，
+# 不参与 Syncplay 的播放/暂停/跳转同步，房主与观看者可各自独立开关。
+# 只复制插件代码，不携带 danmaku-history.json 等本机运行状态。
+$danmakuSource = Join-Path $portableSource 'scripts\uosc_danmaku'
+Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object {
+    $relative = Get-RelativePath $danmakuSource $_.FullName
+    $topLevel = $relative.Split('\')[0]
+    if (@('.github', '.gitignore', '.gitattributes') -contains $topLevel) {
+        return
+    }
+    Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc_danmaku' $relative)
+}
+
 # 随包 AList：只带程序本体和配置模板，绝不携带本机运行状态（data/、密码、日志）。
 Copy-PackageFile (Join-Path $projectRoot 'WatchParty\alist\alist.exe') 'WatchParty\alist\alist.exe'
 Copy-PackageFile (Join-Path $projectRoot 'WatchParty\alist\config.template.json') 'WatchParty\alist\config.template.json'
@@ -127,7 +140,7 @@ foreach ($name in @(
 
 # 房主入口脚本（首次运行向导 + 日常启动）。
 foreach ($name in @('房主首次运行.bat', '启动.bat')) {
-    Copy-PackageFile (Join-Path $projectRoot 'WatchParty' $name) (Join-Path 'WatchParty' $name)
+    Copy-PackageFile (Join-Path $projectRoot (Join-Path 'WatchParty' $name)) (Join-Path 'WatchParty' $name)
 }
 
 # 配置模板。
@@ -197,12 +210,18 @@ $requiredFiles = @(
     'portable_config\syncplay\tailscale_integration.py',
     'portable_config\syncplay\watchparty_setup.py',
     'portable_config\script-opts\syncplay_ui.conf',
+    'portable_config\scripts\uosc_danmaku\main.lua',
+    'portable_config\scripts\uosc_danmaku\apis\dandanplay.lua',
+    'portable_config\scripts\uosc_danmaku\modules\options.lua',
+    'portable_config\scripts\uosc_danmaku\modules\render.lua',
+    'portable_config\scripts\uosc_danmaku\modules\style.lua',
     'THIRD_PARTY_NOTICES.txt',
     'THIRD_PARTY_LICENSES\mpv-GPL-2.0.txt',
     'THIRD_PARTY_LICENSES\mpv-Copyright.txt',
     'THIRD_PARTY_LICENSES\Python-3.14.2.txt',
     'THIRD_PARTY_LICENSES\OpenSSL-3.0.18.txt',
     'THIRD_PARTY_LICENSES\uosc-LGPL-2.1.txt',
+    'THIRD_PARTY_LICENSES\uosc_danmaku-MIT.txt',
     'THIRD_PARTY_LICENSES\Tailscale-BSD-3-Clause.txt',
     'THIRD_PARTY_LICENSES\Material-Icons-Apache-2.0.txt',
     'THIRD_PARTY_LICENSES\AList-AGPL-3.0.txt'
@@ -315,10 +334,10 @@ assert sys.flags.isolated and sys.flags.ignore_environment
 for entry in sys.path:
     resolved = os.path.normcase(os.path.realpath(entry))
     assert os.path.commonpath((root, resolved)) == root, (entry, root)
-connection = sqlite3.connect(":memory:")
-connection.execute("select 1").fetchone()
+connection = sqlite3.connect(':memory:')
+connection.execute('select 1').fetchone()
 connection.close()
-print("Embedded Python runtime OK")
+print('Embedded Python runtime OK')
 '@
 & $packagedPython -I -B -c $runtimeCheck
 if ($LASTEXITCODE -ne 0) { throw "房主包内 Python 运行时验证失败。" }

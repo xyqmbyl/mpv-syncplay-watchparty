@@ -48,6 +48,15 @@ uosc Ziggy helper
   Their license texts are the four Ziggy-prefixed files in
   THIRD_PARTY_LICENSES.
 
+uosc_danmaku
+  Version: 2.2.0 (locally customized build of the upstream plugin)
+  Source: https://github.com/Tony15246/uosc_danmaku
+  License: MIT (Copyright (c) 2024 吴南李)
+  Local changes: the built-in defaults are fontsize 35 and displayarea 0.4,
+    and every danmaku style change made in the plugin menu is saved as the
+    new default in portable_config/script-opts/uosc_danmaku.conf. The plugin
+    is a local OSD overlay only; it never sends playback state over Syncplay.
+
 Material Icons
   Asset: MaterialIconsRound-Regular.otf
   Source: https://github.com/google/material-design-icons

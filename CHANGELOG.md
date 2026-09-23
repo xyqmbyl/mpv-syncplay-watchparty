@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 - 2026-09-23
+
+- Bundled the danmaku plugin uosc_danmaku 2.2.0 (MIT) into both the host and
+  the viewer package, together with its license text and third-party notices.
+- Changed the danmaku defaults to a font size of 35 and a display area of 0.4,
+  and every style change made in the danmaku settings menu is now written to
+  `portable_config/script-opts/uosc_danmaku.conf` as the new default, so it
+  survives a restart; “restore default” removes the entry again.
+- Kept danmaku a purely local OSD overlay driven by the local `time-pos`
+  observer: the host and each viewer toggle it independently, it freezes while
+  the video is paused and realigns on seek. Syncplay playback, pause, seek,
+  delay compensation and MiniServer behaviour are unchanged.
+- Extended both packaging audits to require the bundled danmaku scripts and
+  license while still rejecting `danmaku-history.json` and machine state.
+
 ## 0.2.0 - 2026-09-09
 
 - Added a complete portable host package with mpv, embedded Python, Syncplay,
