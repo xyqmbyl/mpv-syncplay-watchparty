@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0 - 2026-09-24
+
+- Added macOS packages for Apple Silicon and Intel: `build-macos-package.sh`
+  builds host and viewer bundles with mpv, the python.org standalone runtime,
+  AList, Tailscale, uosc, fonts, first-run setup and the same audit rules as
+  the Windows packages; binaries keep their official signatures with an
+  ad-hoc fallback so Gatekeeper does not flag unpacked files as damaged.
+- Split the Windows packages into x64 and x86 builds: x64 reuses the proven
+  64-bit runtime, x86 bundles the official mpv 0.41.0 i686 runtime plus the
+  python.org 3.14.2 embedded distribution; every packaged binary is audited
+  for its PE machine type and every shipped installer has a matching
+  per-architecture SHA-256 pin.
+- Simplified release download names to `WatchParty-Host-Windows-x64.zip`,
+  `WatchParty-Viewer-Windows-x86.zip`, `WatchParty-Host-macOS-AppleSilicon.zip`
+  and so on, each accompanied by a `.sha256` checksum file and a
+  `PACKAGE-CONTENTS.sha256` manifest inside the archive.
+- Release viewer packages now ship without a preset host address: the
+  first-run wizard asks for the host's Tailscale address until one is
+  entered. `-TailscaleHost` / `--tailscale-host` still bakes a preconfigured
+  package for private distribution.
+- Made the Tailscale integration cross-platform: Windows keeps the bundled
+  per-architecture MSI, macOS uses the official Standalone pkg and
+  `/Applications/Tailscale.app` CLI, and the first-run wizards now accept the
+  host address interactively.
+- Added a GitHub Actions workflow that builds and audits the six non-x64
+  packages from a `v*` tag push.
+- Fixed viewers being treated as not ready while still buffering without a
+  `time-pos` during the paused loading phase, which left them on a black
+  screen after the host started playback; readiness now also checks the
+  media duration and established audio/video tracks.
+
 ## 0.3.0 - 2026-09-23
 
 - Bundled the danmaku plugin uosc_danmaku 2.2.0 (MIT) into both the host and

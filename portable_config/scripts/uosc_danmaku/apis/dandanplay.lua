@@ -135,7 +135,6 @@ end
 function make_danmaku_request_args(method, url, headers, body)
     local args = {
         "curl",
-        "--ssl-no-revoke",
         "-L",
         "-X",
         method,
@@ -144,6 +143,12 @@ function make_danmaku_request_args(method, url, headers, body)
         "-H",
         "User-Agent: " .. options.user_agent,
     }
+
+    -- --ssl-no-revoke 只有 Windows Schannel 版 curl 认识；macOS 自带的
+    -- curl 会直接报未知选项并退出。
+    if mp.get_property("platform") == "windows" then
+        table.insert(args, 2, "--ssl-no-revoke")
+    end
 
     if headers then
         for k, v in pairs(headers) do

@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,13 +33,36 @@ CONNECTION_FILE = os.path.join(TAILSCALE_DIR, "connection.json")
 TAILSCALE_IPV4 = ipaddress.ip_network("100.64.0.0/10")
 TAILSCALE_IPV6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 DEFAULT_ALIST_PORT = 5244
-INSTALLER_NAME = "tailscale-setup-1.102.3-amd64.msi"
+# 每个平台/架构只携带并校验自己的官方安装包；哈希与包内文件一一对应。
+# Windows 包内 Python 的位数与包架构一致，因此用 Python 自身位数选 MSI。
+def _python_bitness():
+    return "x86" if struct.calcsize("P") == 4 else "x64"
+
+
+INSTALLERS = {
+    ("nt", "x64"): (
+        "tailscale-setup-1.102.3-amd64.msi",
+        "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE",
+    ),
+    ("nt", "x86"): (
+        "tailscale-setup-1.102.3-x86.msi",
+        "2A46E10F818991CA1476B2947BADB6EA5556541061B5B51C02A39682DE10DF53",
+    ),
+    ("darwin", None): (
+        "Tailscale-1.102.4-macos.pkg",
+        "B40B733AF76233FD1E4AF7ACAEB325268E55E6818C15C6E9AA9E78F427245C5B",
+    ),
+}
+INSTALLER_NAME, INSTALLER_SHA256 = INSTALLERS[
+    ("nt", _python_bitness()) if os.name == "nt" else ("darwin", None)
+]
 INSTALLER_PATH = os.path.join(TAILSCALE_DIR, INSTALLER_NAME)
-INSTALLER_SHA256 = "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE"
 # The current official Windows MSI installs under ``Tailscale IPN``.  Keep
 # the older ``Tailscale`` directory as a compatibility fallback for existing
 # installations and portable builds.
 TAILSCALE_INSTALL_DIRS = ("Tailscale IPN", "Tailscale")
+# macOS 官方 Standalone 安装包装到 /Applications/Tailscale.app。
+TAILSCALE_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
 
 class TailscaleIntegrationError(RuntimeError):
@@ -113,23 +137,30 @@ def locate_tailscale(explicit=None):
     candidates = []
     if explicit:
         candidates.append(os.path.abspath(os.path.expandvars(explicit)))
-    # The full host bundle keeps the matching CLI beside mpv.  Do not rely
-    # on the caller's inherited PATH: a double-clicked .bat or an already
-    # running mpv process can have an older environment snapshot.
-    candidates.append(os.path.join(PROJECT_ROOT, "tailscale.exe"))
-    for variable in (
-            "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)",
-            "LOCALAPPDATA"):
-        base = os.environ.get(variable)
-        if base:
-            for directory_name in TAILSCALE_INSTALL_DIRS:
-                candidates.append(os.path.join(
-                    base, directory_name, "tailscale.exe"))
-    # PATH is a final fallback.  A long-running mpv process can inherit an
-    # older PATH entry, so installed locations above take precedence.
-    found = shutil.which("tailscale.exe") or shutil.which("tailscale")
-    if found:
-        candidates.append(found)
+    if os.name == "nt":
+        # The full host bundle keeps the matching CLI beside mpv.  Do not rely
+        # on the caller's inherited PATH: a double-clicked .bat or an already
+        # running mpv process can have an older environment snapshot.
+        candidates.append(os.path.join(PROJECT_ROOT, "tailscale.exe"))
+        for variable in (
+                "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)",
+                "LOCALAPPDATA"):
+            base = os.environ.get(variable)
+            if base:
+                for directory_name in TAILSCALE_INSTALL_DIRS:
+                    candidates.append(os.path.join(
+                        base, directory_name, "tailscale.exe"))
+        # PATH is a final fallback.  A long-running mpv process can inherit an
+        # older PATH entry, so installed locations above take precedence.
+        found = shutil.which("tailscale.exe") or shutil.which("tailscale")
+        if found:
+            candidates.append(found)
+    else:
+        # macOS：官方 Standalone 包装到 /Applications/Tailscale.app。
+        candidates.append(TAILSCALE_APP_CLI)
+        found = shutil.which("tailscale")
+        if found:
+            candidates.append(found)
     seen = set()
     for candidate in candidates:
         key = os.path.normcase(os.path.normpath(candidate))
@@ -378,18 +409,23 @@ def open_tailscale(cli_path=None):
     cli_path = locate_tailscale(cli_path)
     if cli_path is None:
         raise TailscaleIntegrationError("尚未安装 Tailscale")
-    ui_path = os.path.join(os.path.dirname(cli_path), "tailscale-ipn.exe")
-    if not os.path.isfile(ui_path):
-        raise TailscaleIntegrationError("找不到 Tailscale 登录界面")
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(
-        [ui_path],
-        close_fds=True,
-        creationflags=flags,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return {"opened": True, "ui_path": ui_path}
+    if os.name == "nt":
+        ui_path = os.path.join(os.path.dirname(cli_path), "tailscale-ipn.exe")
+        if not os.path.isfile(ui_path):
+            raise TailscaleIntegrationError("找不到 Tailscale 登录界面")
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(
+            [ui_path],
+            close_fds=True,
+            creationflags=flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return {"opened": True, "ui_path": ui_path}
+    # macOS：打开 Tailscale.app 的主界面（未登录时即登录窗口）。
+    subprocess.run(["open", "-a", "Tailscale"], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"opened": True, "ui_path": "/Applications/Tailscale.app"}
 
 
 def verify_installer(path=INSTALLER_PATH):
@@ -426,7 +462,7 @@ def parse_args(argv=None):
         description="Tailscale Device Sharing + AList watch-party setup")
     parser.add_argument("--json", action="store_true", help="输出供 mpv 面板读取的 JSON")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="syncplay_ui.conf 路径")
-    parser.add_argument("--cli", default=None, help="tailscale.exe 路径")
+    parser.add_argument("--cli", default=None, help="tailscale 命令行程序路径")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="检查 Tailscale 状态")
     subparsers.add_parser("configure-host", help="配置房主的 Tailscale IPv4 直连地址")

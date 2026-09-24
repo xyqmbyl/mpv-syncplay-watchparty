@@ -9,7 +9,12 @@ echo ============================================================
 echo   MPV Syncplay 观看者首次设置
 echo ============================================================
 echo.
-echo 房主地址已预设为：__ALIST_ORIGIN__
+set "HOST_ADDR=__ALIST_ORIGIN__"
+if "%HOST_ADDR%"=="" (
+    echo 本包未预设房主地址，首次设置时需要输入房主提供的地址。
+) else (
+    echo 房主地址已预设为：__ALIST_ORIGIN__
+)
 echo 此地址不是密码；只有获得房主 Tailscale 共享授权的设备才能访问。
 echo.
 
@@ -48,11 +53,20 @@ echo 请使用你自己的账号登录 Tailscale，并接受房主发来的设�
 echo 等到 Tailscale 显示“已连接”后，再回到此窗口继续。
 pause
 
+:ask_host
 echo [3/4] 确认房主地址。
-echo 直接按回车使用预设地址，或输入房主提供的地址后回车。
-set "HOST_ADDR=__ALIST_ORIGIN__"
+if "%HOST_ADDR%"=="" (
+    echo 本包未预设地址，请输入房主提供的地址后回车。
+) else (
+    echo 直接按回车使用预设地址，或输入房主提供的地址后回车。
+)
+set "HOST_INPUT="
 set /p "HOST_INPUT=房主地址 [%HOST_ADDR%]: "
 if not "%HOST_INPUT%"=="" set "HOST_ADDR=%HOST_INPUT%"
+if "%HOST_ADDR%"=="" (
+    echo 必须提供房主地址才能继续，请向房主索取后重新输入。
+    goto ask_host
+)
 
 :configure
 echo.

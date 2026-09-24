@@ -247,6 +247,12 @@ class PingService:
 # ======================================================================
 class MpvPlayer:
     def __init__(self, pipe_path, wait_seconds=60):
+        # `~~` 指 portable_config 目录（mpv 惯例）；包内脚本必然位于
+        # portable_config/syncplay 下，可自行推导。
+        if pipe_path.startswith("~~"):
+            pipe_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                pipe_path[2:].lstrip("/\\"))
         self.pipe_path = pipe_path
         self._q = queue.Queue()
         self._dead = threading.Event()
@@ -261,20 +267,33 @@ class MpvPlayer:
         self._worker.start()
         info = self.file_info()
         self.base_speed = self._simple_get("speed") or 1.0
-        log("已连接 mpv（IPC 管道 %s），基础播放速度 %sx" % (pipe_path, self.base_speed))
+        log("已连接 mpv（IPC %s），基础播放速度 %sx" % (pipe_path, self.base_speed))
         if info:
             log("当前文件：%s" % info.get("name"))
 
     # ---- 管道连接 ----
     def _connect(self, wait_seconds):
         deadline = time.time() + wait_seconds
+        # Windows 命名管道可以直接按文件打开；macOS/Linux 的 input-ipc-server
+        # 是 Unix domain socket，用 AF_UNIX 连接并包装成同样的 read/write 句柄，
+        # _send/_read_line 对两种传输完全无感知。
+        use_socket = not self.pipe_path.lower().startswith("\\\\.\\pipe\\")
+        last_error = None
         while True:
             try:
-                self._f = open(self.pipe_path, "r+b", buffering=0)
+                if use_socket:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.connect(self.pipe_path)
+                    self._f = sock.makefile("rwb", buffering=0)
+                else:
+                    self._f = open(self.pipe_path, "r+b", buffering=0)
                 return
-            except OSError:
+            except OSError as exc:
+                last_error = exc
                 if time.time() > deadline:
-                    raise SystemExit("连接 mpv IPC 管道失败：%s（请确认 mpv 已启动且配置了 input-ipc-server）" % self.pipe_path)
+                    raise SystemExit(
+                        "连接 mpv IPC 通道失败：%s（%s；请确认 mpv 已启动且配置了 input-ipc-server）"
+                        % (self.pipe_path, last_error))
                 time.sleep(0.5)
 
     def _send(self, obj):
@@ -2978,7 +2997,8 @@ def main():
     ap.add_argument("--server", default="syncplay.pl:8995", help="服务器 地址:端口（默认 syncplay.pl:8995）")
     ap.add_argument("--room", default=None, help="房间名")
     ap.add_argument("--name", default=None, help="昵称")
-    ap.add_argument("--pipe", default="\\\\.\\pipe\\mpvpipe", help="mpv IPC 管道名")
+    ap.add_argument("--pipe", default="\\\\.\\pipe\\mpvpipe" if os.name == "nt" else "~~/watchparty-mpv-ipc.sock",
+                    help="mpv IPC 通道（Windows 命名管道或 Unix socket 路径，支持 ~~ 前缀）")
     ap.add_argument("--rewind", type=float, default=REWIND_THRESHOLD, help="超前多少秒回退（默认 4）")
     ap.add_argument("--host", action="store_true", help="以精简中继服务器模式运行（--port 指定端口）")
     ap.add_argument("--port", type=int, default=8995, help="--host 模式监听端口")

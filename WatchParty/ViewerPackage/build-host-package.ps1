@@ -1,7 +1,9 @@
 ﻿[CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
-    [string]$PackageName = "MPV-Syncplay-Host"
+    [string]$PackageName = "",
+    [ValidateSet('x64', 'x86')]
+    [string]$Arch = 'x64'
 )
 
 # 构建房主完整包：mpv + 嵌入式 Python + 随包 AList + 首次运行向导。
@@ -11,14 +13,43 @@ $ErrorActionPreference = "Stop"
 
 $expectedAlistVersion = "v3.64.0"
 $expectedAlistCommit = "3e49fa46"
-$expectedAlistSha256 = "2605BBE07D07F27C653C964EB8834B40AE4B4AFC5BDDF93287281801C95B3C2F"
+# AList 与 Tailscale 官方安装包都按架构区分；哈希与包内文件一一对应。
+$expectedAlistSha256 = @{
+    x64 = "2605BBE07D07F27C653C964EB8834B40AE4B4AFC5BDDF93287281801C95B3C2F"
+    x86 = "F1A462EC2005CA2B704D7443FC43F411D739ADB1760C7A0A04A376E6449B1166"
+}
+$tailscaleInstallerName = @{
+    x64 = "tailscale-setup-1.102.3-amd64.msi"
+    x86 = "tailscale-setup-1.102.3-x86.msi"
+}
+$tailscaleInstallerSha256 = @{
+    x64 = "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE"
+    x86 = "2A46E10F818991CA1476B2947BADB6EA5556541061B5B51C02A39682DE10DF53"
+}
+$alistSha256 = $expectedAlistSha256[$Arch]
+$tailscaleInstaller = $tailscaleInstallerName[$Arch]
+$tailscaleRequired = 'WatchParty\Tailscale\' + $tailscaleInstaller
 
 $builderDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "..\.."))
+if ([string]::IsNullOrWhiteSpace($PackageName)) {
+    $PackageName = "WatchParty-Host-Windows-$Arch"
+}
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $builderDirectory "output"
 }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+
+# x64 包直接复用开发目录里的 64 位运行时；x86 包必须使用 fetch-artifacts.ps1
+# 下载并解包的官方 32 位产物（artifacts\win-x86），绝不能与 x64 混用。
+if ($Arch -eq 'x64') {
+    $nativeRoot = $projectRoot
+} else {
+    $nativeRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "artifacts\win-x86"))
+    if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
+        throw "x86 构建缺少预置产物，请先运行 fetch-artifacts.ps1 下载并解包 Windows x86 依赖。"
+    }
+}
 
 if ($PackageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
     throw "PackageName 只能包含英文字母、数字、点、下划线和连字符。"
@@ -80,15 +111,32 @@ $rootFiles = @(
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
     'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll'
 )
+if ($Arch -eq 'x86') {
+    # 官方 i686 mpv 与嵌入式 x86 Python：与 x64 开发目录不同，mpv 需要随包
+    # 携带 FFmpeg/libass 等运行库，Python 嵌入式包只带 vcruntime140.dll。
+    $rootFiles = @(
+        'mpv.exe', 'mpv.com',
+        'avcodec-62.dll', 'avdevice-62.dll', 'avfilter-11.dll',
+        'avformat-62.dll', 'avutil-60.dll',
+        'libass-9.dll', 'libdav1d.dll', 'libfreetype-6.dll', 'libfribidi-0.dll',
+        'libgcc_s_dw2-1.dll', 'libharfbuzz-0.dll', 'libiconv-2.dll',
+        'liblcms2.dll', 'libplacebo-358.dll', 'libshaderc_shared.dll',
+        'libspirv-cross-c-shared.dll', 'libssp-0.dll', 'libstdc++-6.dll',
+        'libwinpthread-1.dll', 'swresample-6.dll', 'swscale-9.dll', 'zlib1.dll',
+        'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
+        'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll',
+        'sqlite3.dll', 'vcruntime140.dll'
+    )
+}
 foreach ($name in $rootFiles) {
-    Copy-PackageFile (Join-Path $projectRoot $name) $name
+    Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 $pythonExtensions = @(
     '_hashlib.pyd', '_overlapped.pyd', '_queue.pyd', '_socket.pyd', '_ssl.pyd',
     '_sqlite3.pyd', 'select.pyd', 'unicodedata.pyd'
 )
 foreach ($name in $pythonExtensions) {
-    Copy-PackageFile (Join-Path $projectRoot $name) $name
+    Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 
 $portableSource = Join-Path $projectRoot 'portable_config'
@@ -124,19 +172,48 @@ Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object
 }
 
 # 随包 AList：只带程序本体和配置模板，绝不携带本机运行状态（data/、密码、日志）。
-Copy-PackageFile (Join-Path $projectRoot 'WatchParty\alist\alist.exe') 'WatchParty\alist\alist.exe'
+$alistBinary = if ($Arch -eq 'x64') {
+    Join-Path $projectRoot 'WatchParty\alist\alist.exe'
+} else {
+    Join-Path $nativeRoot 'alist\alist.exe'
+}
+Copy-PackageFile $alistBinary 'WatchParty\alist\alist.exe'
 Copy-PackageFile (Join-Path $projectRoot 'WatchParty\alist\config.template.json') 'WatchParty\alist\config.template.json'
 Copy-PackageFile (Join-Path $projectRoot 'WatchParty\media\README.txt') 'WatchParty\media\README.txt'
 
 # Tailscale 官方安装包与房主/观看者辅助脚本。
-$tailscaleSource = Join-Path $projectRoot 'WatchParty\Tailscale'
-foreach ($name in @(
-    'tailscale-setup-1.102.3-amd64.msi', 'install-tailscale.bat',
-    'configure-host.bat', 'configure-viewer.bat', 'status.bat',
-    'SOURCE.txt', 'README.md'
-)) {
-    Copy-PackageFile (Join-Path $tailscaleSource $name) (Join-Path 'WatchParty\Tailscale' $name)
+$tailscaleSource = if ($Arch -eq 'x64') {
+    Join-Path $projectRoot 'WatchParty\Tailscale'
+} else {
+    Join-Path $nativeRoot 'Tailscale'
 }
+# Tailscale 官方安装包与房主/观看者辅助脚本。脚本始终取自仓库；MSI 按架构
+# 取自对应产物目录；SOURCE.txt 按架构生成，记录本包携带的安装包与哈希。
+foreach ($name in @(
+    'install-tailscale.bat', 'configure-host.bat', 'configure-viewer.bat',
+    'status.bat', 'README.md'
+)) {
+    Copy-PackageFile (Join-Path $projectRoot (Join-Path 'WatchParty\Tailscale' $name)) `
+        (Join-Path 'WatchParty\Tailscale' $name)
+}
+$msiSource = Join-Path $tailscaleSource $tailscaleInstaller
+Copy-PackageFile $msiSource (Join-Path 'WatchParty\Tailscale' $tailscaleInstaller)
+$msiItem = Get-Item -LiteralPath (Join-Path $stagePath (Join-Path 'WatchParty\Tailscale' $tailscaleInstaller))
+$utf8 = New-Object Text.UTF8Encoding($false)
+$tailscaleProvenance = @"
+Tailscale for Windows ($Arch)
+Version: 1.102.3
+Official URL: https://pkgs.tailscale.com/stable/$tailscaleInstaller
+Downloaded: 2026-09-08
+Size: $($msiItem.Length) bytes
+SHA-256: $($tailscaleInstallerSha256[$Arch])
+
+The installer is kept unchanged.  install-tailscale.bat checks the recorded
+SHA-256 hash and the Windows Authenticode signer before launching it.
+"@
+[IO.File]::WriteAllText(
+    (Join-Path $stagePath 'WatchParty\Tailscale\SOURCE.txt'),
+    $tailscaleProvenance, $utf8)
 
 # 房主入口脚本（首次运行向导 + 日常启动）。
 foreach ($name in @('房主首次运行.bat', '启动.bat')) {
@@ -200,7 +277,7 @@ $requiredFiles = @(
     'WatchParty\alist\alist.exe',
     'WatchParty\alist\config.template.json',
     'WatchParty\media\README.txt',
-    'WatchParty\Tailscale\tailscale-setup-1.102.3-amd64.msi',
+    $tailscaleRequired,
     'WatchParty\房主首次运行.bat',
     'WatchParty\启动.bat',
     'portable_config\scripts\syncplay_ui.lua',
@@ -321,8 +398,33 @@ if ([string]$alistTemplate.scheme.address -ne '0.0.0.0' -or
 
 $alistPath = Join-Path $stagePath 'WatchParty\alist\alist.exe'
 $alistHash = (Get-FileHash -LiteralPath $alistPath -Algorithm SHA256).Hash
-if ($alistHash -ne $expectedAlistSha256) {
-    throw "审计失败，AList 二进制 SHA-256 与固定版本不符。"
+if ($alistHash -ne $alistSha256) {
+    throw "审计失败，AList 二进制 SHA-256 与固定版本（$Arch）不符。"
+}
+
+# PE 机器类型审计：防止 x64/x86 产物混装进同一个包。
+$peMachine = @{ x64 = 0x8664; x86 = 0x014C }
+function Get-PEMachineType {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $reader = New-Object IO.BinaryReader($stream)
+        $stream.Position = 0x3C
+        $peOffset = $reader.ReadInt32()
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw "审计失败，不是有效的 PE 文件：$Path"
+        }
+        return $reader.ReadUInt16()
+    } finally {
+        $stream.Dispose()
+    }
+}
+foreach ($relative in @('mpv.exe', 'python.exe', 'WatchParty\alist\alist.exe')) {
+    $actualMachine = Get-PEMachineType (Join-Path $stagePath $relative)
+    if ($actualMachine -ne $peMachine[$Arch]) {
+        throw ("审计失败，{0} 的 PE 架构与 -Arch {1} 不符。" -f $relative, $Arch)
+    }
 }
 
 # 运行时自检：Python、AList、mpv、Tailscale 安装包签名。
@@ -449,13 +551,22 @@ $manifestLines = Get-ChildItem -LiteralPath $stagePath -File -Recurse -Force |
     }
 [IO.File]::WriteAllLines($manifestPath, [string[]]$manifestLines, $utf8)
 
-# 与观看者包相同的固化时间戳，保证可复现构建。
+# 与观看者包相同的固化时间戳，保证可复现构建。冒烟测试刚运行过的
+# alist/mpv 可能尚未完全释放句柄，个别文件允许短暂重试。
 $archiveTimestamp = [DateTime]::SpecifyKind(
     [DateTime]::ParseExact('2026-09-08 00:00:00', 'yyyy-MM-dd HH:mm:ss', $null),
     [DateTimeKind]::Utc
 )
 Get-ChildItem -LiteralPath $stagePath -Force -Recurse | ForEach-Object {
-    $_.LastWriteTimeUtc = $archiveTimestamp
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            $_.LastWriteTimeUtc = $archiveTimestamp
+            break
+        } catch [System.IO.IOException] {
+            if ($attempt -eq 5) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 (Get-Item -LiteralPath $stagePath).LastWriteTimeUtc = $archiveTimestamp
 

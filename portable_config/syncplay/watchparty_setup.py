@@ -41,7 +41,8 @@ PORTABLE_CONFIG_DIR = os.path.dirname(SYNCPLAY_DIR)
 PROJECT_ROOT = os.path.dirname(PORTABLE_CONFIG_DIR)
 WATCHPARTY_DIR = os.path.join(PROJECT_ROOT, "WatchParty")
 ALIST_DIR = os.path.join(WATCHPARTY_DIR, "alist")
-ALIST_EXE = os.path.join(ALIST_DIR, "alist.exe")
+IS_WINDOWS = os.name == "nt"
+ALIST_EXE = os.path.join(ALIST_DIR, "alist.exe" if IS_WINDOWS else "alist")
 ALIST_CONFIG = os.path.join(ALIST_DIR, "data", "config.json")
 ALIST_TEMPLATE = os.path.join(ALIST_DIR, "config.template.json")
 MEDIA_DIR = os.path.join(WATCHPARTY_DIR, "media")
@@ -69,6 +70,15 @@ class SetupError(RuntimeError):
 # ----------------------------------------------------------------------
 def log(message):
     print(message, flush=True)
+
+
+def ui_path(text):
+    """面向用户的路径文本：Windows 用反斜杠，macOS/Linux 用正斜杠。"""
+    return text.replace("/", "\\") if IS_WINDOWS else text
+
+
+# 房主首次设置入口：Windows 批处理，macOS 用 .command。
+HOST_FIRST_RUN_NAME = "房主首次运行.bat" if IS_WINDOWS else "首次设置.command"
 
 
 def _plain_url(url):
@@ -208,6 +218,16 @@ def render_alist_config():
     database = config.setdefault("database", {})
     database.setdefault("type", "sqlite3")
     database.setdefault("db_file", "data\\data.db")
+    if not IS_WINDOWS:
+        # 模板按 Windows 习惯写成 data\\temp；POSIX 上反斜杠是文件名的一部分，
+        # 必须统一成正斜杠。
+        for key in ("temp_dir", "bleve_dir"):
+            if isinstance(config.get(key), str):
+                config[key] = config[key].replace("\\", "/")
+        database["db_file"] = str(database.get("db_file", "data/data.db")).replace("\\", "/")
+        log_config = config.setdefault("log", {})
+        if isinstance(log_config.get("name"), str):
+            log_config["name"] = log_config["name"].replace("\\", "/")
     os.makedirs(os.path.dirname(ALIST_CONFIG), exist_ok=True)
     with open(ALIST_CONFIG, "w", encoding="utf-8") as stream:
         json.dump(config, stream, ensure_ascii=False, indent=2)
@@ -271,7 +291,7 @@ def ensure_alist():
         raise SetupError(
             "没有找到随包的 AList（%s）。\n"
             "你下载的可能是 GitHub 源码 ZIP；请下载 Release 中的 "
-            "MPV-Syncplay-Host.zip 完整房主包。" % ALIST_EXE)
+            "WatchParty-Host 完整房主包。" % ALIST_EXE)
 
     local = "http://127.0.0.1:%d" % ALIST_PORT
     if probe_port("127.0.0.1", ALIST_PORT):
@@ -280,8 +300,8 @@ def ensure_alist():
             return local, False
         raise SetupError(
             "端口 %d 已被其他程序占用（不是随包 AList）。\n"
-            "请关闭占用该端口的程序，或修改 WatchParty\\alist\\data\\config.json "
-            "中的 http_port 后重试。" % ALIST_PORT)
+            "请关闭占用该端口的程序，或修改 WatchParty%salist%sdata%sconfig.json "
+            "中的 http_port 后重试。" % ((ALIST_PORT,) + (os.sep,) * 4))
 
     fresh_install = not os.path.isfile(ALIST_CONFIG)
     if fresh_install:
@@ -315,7 +335,7 @@ def ensure_alist():
         stop_alist_process(process)
         raise SetupError(
             "AList 启动失败：%.0f 秒内未在 127.0.0.1:%d 就绪。\n"
-            "请查看 WatchParty\\alist\\data\\log\\log.log 排查。" % (STARTUP_TIMEOUT, ALIST_PORT))
+            "请查看 %s 排查。" % (ui_path("WatchParty/alist/data/log/log.log"), STARTUP_TIMEOUT, ALIST_PORT))
     log("AList 已启动：http://127.0.0.1:%d" % ALIST_PORT)
     return local, True
 
@@ -370,8 +390,8 @@ class AlistAdmin:
         if body.get("code") != 200 or not (body.get("data") or {}).get("token"):
             raise SetupError(
                 "AList 管理员登录失败（%s）。\n"
-                "请核对 WatchParty\\ADMIN_PASSWORD.txt 中的密码是否与当前 "
-                "AList 数据目录匹配。" % body.get("message"))
+                "请核对 WatchParty%sADMIN_PASSWORD.txt 中的密码是否与当前 "
+                "AList 数据目录匹配。" % ((body.get("message"),) + (os.sep,) * 2))
         return body["data"]["token"]
 
     # ---- 存储与设置 ----
@@ -473,7 +493,7 @@ def ensure_admin_password():
         raise SetupError(
             "无法初始化 AList 管理员密码：%s" % (result.stdout or "").strip()[:300])
     write_admin_password(password)
-    log("已生成 AList 管理员密码并保存到 WatchParty\\ADMIN_PASSWORD.txt（请勿外传）。")
+    log("已生成 AList 管理员密码并保存到 WatchParty%sADMIN_PASSWORD.txt（请勿外传）。" % os.sep)
     return password
 
 
@@ -538,21 +558,37 @@ def apply_tailscale(config_path=UI_CONFIG, install_if_missing=False):
     """检测 Tailscale 并把 alist_server 写为 http://<Tailscale IPv4>:5244。"""
     status = tailscale_integration.query_status()
     if not status.get("installed"):
+        installer_hint = ("请运行 WatchParty\\Tailscale\\install-tailscale.bat 安装并登录，"
+                          if IS_WINDOWS else
+                          "请运行包内 WatchParty/Tailscale/Tailscale 安装包（双击 .pkg）并登录，")
         message = ("未检测到 Tailscale。观看者在外地时需要它才能访问你的 AList。\n"
-                   "请运行 WatchParty\\Tailscale\\install-tailscale.bat 安装并登录，"
-                   "然后重新运行本向导。")
+                   "%s"
+                   "然后重新运行本向导。" % installer_hint)
         if install_if_missing:
-            installer = os.path.join(WATCHPARTY_DIR, "Tailscale", "install-tailscale.bat")
-            if os.path.isfile(installer):
-                log("正在打开 Tailscale 官方安装器（签名已校验）...")
-                subprocess.run(["cmd", "/c", installer], check=False)
-                status = tailscale_integration.query_status()
-                if not status.get("installed"):
-                    log("安装尚未完成，请安装并登录后重新运行本向导。")
+            if IS_WINDOWS:
+                installer = os.path.join(WATCHPARTY_DIR, "Tailscale",
+                                         "install-tailscale.bat")
+                if os.path.isfile(installer):
+                    log("正在打开 Tailscale 官方安装器（签名已校验）...")
+                    subprocess.run(["cmd", "/c", installer], check=False)
+                    status = tailscale_integration.query_status()
+                    if not status.get("installed"):
+                        log("安装尚未完成，请安装并登录后重新运行本向导。")
+                        return status, message
+                else:
+                    log("找不到 WatchParty\\Tailscale\\install-tailscale.bat，请手动安装 Tailscale。")
                     return status, message
             else:
-                log("找不到 WatchParty\\Tailscale\\install-tailscale.bat，请手动安装 Tailscale。")
-                return status, message
+                installer = tailscale_integration.INSTALLER_PATH
+                if os.path.isfile(installer):
+                    log("正在打开 Tailscale 官方安装器（%s）..." % os.path.basename(installer))
+                    subprocess.run(["open", installer], check=False)
+                    log("请在安装器中完成安装后再运行本向导。")
+                    return status, message
+                else:
+                    log("找不到包内 %s，请从 Tailscale 官网手动安装。" %
+                        tailscale_integration.INSTALLER_NAME)
+                    return status, message
         else:
             log(message)
             return status, message
@@ -664,7 +700,7 @@ def probe_tailscale_peer(tailscale_status, host, timeout=7.0):
     """返回 ``(True/False/None, 详情)``；None 表示 CLI 无法单独确认。"""
     cli_path = tailscale_status.get("cli_path") or tailscale_integration.locate_tailscale()
     if not cli_path:
-        return None, "找不到 tailscale.exe，无法执行 peer ping"
+        return None, "找不到 tailscale 命令，无法执行 peer ping"
     result = _run_tailscale_command(
         cli_path, ["ping", "--timeout=5s", "--c=1", host], timeout=timeout)
     if isinstance(result, tuple):
@@ -783,10 +819,10 @@ def _log_anonymous_failure(result):
     alist_code = getattr(result, "alist_code", None)
     if "guest user is disabled" in combined or ("guest" in combined and "disabled" in combined):
         log("AList 游客访问未开启（Guest user is disabled）。")
-        log("下一步：请房主重新运行“房主首次运行.bat”，启用 guest 匿名只读访问。")
+        log("下一步：请房主重新运行“%s”，启用 guest 匿名只读访问。" % HOST_FIRST_RUN_NAME)
     elif getattr(result, "signature_required", False) or "expire missing" in combined:
         log("AList 仍启用了签名（expire missing），匿名视频 URL 无法使用。")
-        log("下一步：请房主重新运行“房主首次运行.bat”，关闭全局和 /media 存储签名。")
+        log("下一步：请房主重新运行“%s”，关闭全局和 /media 存储签名。" % HOST_FIRST_RUN_NAME)
     elif http_status == 401 or alist_code == 401:
         log("AList 视频 URL 匿名访问返回 401，游客读取权限尚未正确开放。")
         log("下一步：请房主检查 guest 是否启用，以及 /media 是否设置了密码。")
@@ -795,7 +831,7 @@ def _log_anonymous_failure(result):
         log("实际结果：%s" % (result_text or getattr(result, "status_text", "未知")))
     else:
         log("AList 视频 URL 无法匿名访问：%s" % (result_text or "未知错误"))
-        log("下一步：请房主重新运行“房主首次运行.bat”完成 AList 自检。")
+        log("下一步：请房主重新运行“%s”完成 AList 自检。" % HOST_FIRST_RUN_NAME)
 
 
 def diagnose_host(host=None, media_path=None, config_path=UI_CONFIG):
@@ -806,7 +842,11 @@ def diagnose_host(host=None, media_path=None, config_path=UI_CONFIG):
     if not tailscale_status.get("installed"):
         log("Tailscale 程序        FAIL")
         log("诊断结论：Tailscale 未安装。")
-        log("下一步：运行 WatchParty\\Tailscale\\install-tailscale.bat，安装后使用自己的账号登录。")
+        if IS_WINDOWS:
+            log("下一步：运行 WatchParty\\Tailscale\\install-tailscale.bat，安装后使用自己的账号登录。")
+        else:
+            log("下一步：双击包内 WatchParty/Tailscale/%s 完成安装，再用自己的账号登录。"
+                % tailscale_integration.INSTALLER_NAME)
         return 1
     log("Tailscale 程序        OK")
     backend_state = str(tailscale_status.get("backend_state") or "Unknown")
@@ -837,7 +877,7 @@ def diagnose_host(host=None, media_path=None, config_path=UI_CONFIG):
         log("AList 端口            FAIL (%d)" % ALIST_PORT)
         log("诊断结论：无法访问房主 AList 5244 端口。")
         if reachable is True:
-            log("Tailscale 网络已能到达房主；请让房主启动 AList，并检查 Windows 防火墙。")
+            log("Tailscale 网络已能到达房主；请让房主启动 AList，并检查系统防火墙。")
         elif reachable is False:
             log("Tailscale ping 和 5244 TCP 均失败。最常见原因是尚未接受房主设备共享；")
             log("也可能是房主离线、房主尚未启动 AList，或房主地址已经变化。")
@@ -882,7 +922,7 @@ def diagnose_host(host=None, media_path=None, config_path=UI_CONFIG):
                 log("诊断结论：AList 匿名访问返回 401，游客读取权限未开启。")
             elif discovery_error == "empty":
                 log("诊断结论：%s，无法验证匿名视频 URL 和 HTTP Range。" % detail)
-                log("下一步：请房主把至少一个视频放入 WatchParty\\media 后重试。")
+                log("下一步：请房主把至少一个视频放入 %s 后重试。" % ui_path("WatchParty/media"))
             else:
                 log("诊断结论：无法匿名读取房主 /media：%s" % detail)
             return 1
@@ -907,7 +947,7 @@ def inspect_host_alist():
     """读取 AList 管理状态，不修改管理员、存储或全局设置。"""
     password = read_admin_password()
     if not password:
-        raise SetupError("缺少 WatchParty\\ADMIN_PASSWORD.txt，无法核对 AList 管理设置。")
+        raise SetupError("缺少 %s，无法核对 AList 管理设置。" % ui_path("WatchParty/ADMIN_PASSWORD.txt"))
     admin = AlistAdmin("http://127.0.0.1:%d" % ALIST_PORT, password)
     settings = {item.get("key"): str(item.get("value") or "")
                 for item in admin.list_settings() if isinstance(item, dict)}
@@ -1003,7 +1043,7 @@ def diagnose_local_host(config_path=UI_CONFIG):
     alist_program = os.path.isfile(ALIST_EXE)
     log("AList 程序           %s" % ("OK" if alist_program else "FAIL"))
     if not alist_program:
-        failures.append("缺少随包 AList/alist.exe")
+        failures.append("缺少随包 AList（%s）" % ALIST_EXE)
 
     ping_status, ping_body = http_get(
         "http://127.0.0.1:%d/ping" % ALIST_PORT, timeout=5.0)
@@ -1040,7 +1080,7 @@ def diagnose_local_host(config_path=UI_CONFIG):
     log("Guest                %s" % ("OK" if guest_ok else "FAIL"))
     log("Sign                 %s" % ("OFF" if sign_off else "FAIL"))
     if not media_ok:
-        failures.append("/media 未指向当前包的 WatchParty\\media")
+        failures.append("/media 未指向当前包的 %s" % ui_path("WatchParty/media"))
     if not guest_ok:
         failures.append("AList 游客访问未开启")
     if not sign_off:
@@ -1158,7 +1198,7 @@ def run_host_wizard(config_path=UI_CONFIG, install_if_missing=False):
     log("")
     log("=" * 56)
     log("  向导完成。日常使用：")
-    log("    1. 把视频放进 WatchParty\\media（默认只自动共享此目录；")
+    log("    1. 把视频放进 %s（默认只自动共享此目录；" % ui_path("WatchParty/media"))
     log("       外部路径必须已经配置 alist_map 才能供观看者播放）")
     log("    2. 启动 mpv，按 Ctrl+Shift+S 打开面板，创建房间并播放")
     log("    3. 观看者加入同一 Syncplay 服务器与房间即可自动加载视频")

@@ -1,6 +1,6 @@
 # MPV Syncplay WatchParty
 
-这是一个面向 Windows 便携版 mpv 的无聊天同步观影扩展。它保留现有
+这是一个面向 Windows 与 macOS 便携版 mpv 的无聊天同步观影扩展。它保留现有
 Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增加：
 
 - mpv 内置的简洁二级侧边栏控制面板；
@@ -15,10 +15,19 @@ Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增�
 ## 从 GitHub 下载后如何开始两人观看
 
 进入 [最新 Release](https://github.com/xyqmbyl/mpv-syncplay-watchparty/releases/latest)
-的 `Assets`，房主下载 `MPV-Syncplay-Host.zip`，观看者下载
-`MPV-Syncplay-Viewer.zip`。需要校验下载时，同时取得各自同名的 `.sha256`
-文件。不要下载 GitHub 自动生成的 `Source code (zip)`；源码包不含 mpv、
-Python、AList 和首次运行所需组件。
+的 `Assets`，按系统和架构下载：
+
+| 系统 | 房主包 | 观看者包 |
+| --- | --- | --- |
+| Windows 64 位 | `WatchParty-Host-Windows-x64.zip` | `WatchParty-Viewer-Windows-x64.zip` |
+| Windows 32 位 | `WatchParty-Host-Windows-x86.zip` | `WatchParty-Viewer-Windows-x86.zip` |
+| Apple Silicon（M 系列芯片） | `WatchParty-Host-macOS-AppleSilicon.zip` | `WatchParty-Viewer-macOS-AppleSilicon.zip` |
+| Intel Mac | `WatchParty-Host-macOS-Intel.zip` | `WatchParty-Viewer-macOS-Intel.zip` |
+
+需要校验下载时，同时取得各自同名的 `.sha256` 文件。不确定 Windows 位数时，
+64 位系统一律选 x64；只有很老的 32 位系统才需要 x86。不要下载 GitHub 自动
+生成的 `Source code (zip)`；源码包不含 mpv、Python、AList 和首次运行所需
+组件。
 
 ### 1. 房主首次设置
 
@@ -45,9 +54,9 @@ Python、AList 和首次运行所需组件。
 1. 先接受房主发来的设备共享邀请，再完整解压观看者 ZIP。
 2. 双击 `观看者首次运行.bat`，按提示安装 Tailscale，并用观看者自己的账号
    登录。等 Tailscale 显示已连接后回到向导。
-3. 确认预设媒体地址与房主发来的一致；若不一致，输入完整的
-   `http://100.x.x.x:5244`。向导会清除本地发布映射，并从观看者视角检测
-   房主 AList 是否可达。
+3. Release 观看者包不预设房主地址：按向导提示输入房主发来的完整
+   `http://100.x.x.x:5244` 后回车。向导会清除本地发布映射，并从观看者视角
+   检测房主 AList 是否可达。
 4. 诊断通过后 mpv 会自动打开。以后观看者只需双击 `启动观看.bat`。
 
 观看者不需要 AList 账号、房主密码或房主的视频文件。地址无法访问时不要
@@ -100,23 +109,33 @@ $env:SYNCPLAY_RUN_MPV_INTEGRATION = "1"
 python portable_config\syncplay\test_mpv_ipc_real.py -v
 ```
 
-## 构建观看者包
+## 构建分享包
 
-构建器只适用于已有合法 mpv Windows 便携发行版的完整目录，并使用明确的
-允许列表复制文件：
+构建器只适用于已有合法 mpv 便携发行版的完整目录（Windows 需 mpv x64/x86
+便携版，macOS 需 mpv.app），并使用明确的允许列表复制文件。不带
+`-TailscaleHost` / `--tailscale-host` 时生成通用包：观看者首次运行时按
+提示输入房主地址；带上该参数则预配置 `http://该地址:5244`。
+
+Windows（PowerShell，房主/观看者通用）：
 
 ```powershell
-.\WatchParty\ViewerPackage\build-viewer-package.ps1 `
-  -TailscaleHost "100.100.20.30" # 示例；替换为向导显示的实际地址
+.\WatchParty\ViewerPackage\build-host-package.ps1              # x64 房主包
+.\WatchParty\ViewerPackage\build-host-package.ps1 -Arch x86    # x86 房主包
+.\WatchParty\ViewerPackage\build-viewer-package.ps1            # x64 通用观看者包
+.\WatchParty\ViewerPackage\build-viewer-package.ps1 -Arch x86 -TailscaleHost "100.100.20.30"
 ```
 
-参数填写房主首次向导显示的 Tailscale `100.x` IPv4；构建器会在观看者包中
-预设 `http://该地址:5244`。地址变化后应重新构建，或让观看者在首次向导中
-输入新地址。
+macOS（bash，区分 Apple Silicon 与 Intel）：
+
+```bash
+./WatchParty/ViewerPackage/build-macos-package.sh --role host   --arch arm64
+./WatchParty/ViewerPackage/build-macos-package.sh --role viewer --arch intel
+```
 
 生成目录、ZIP、逐文件清单及 SHA-256 位于
 `WatchParty\ViewerPackage\output`。构建器会拒绝房主配置、AList 数据、媒体、
-历史、日志、缓存和凭据类文件。
+历史、日志、缓存和凭据类文件，并做运行时冒烟自检。GitHub Actions 会在
+推送 `v*` 标签时自动构建 x86 Windows 与两个 macOS 包并发布 Release。
 
 ## 兼容性
 

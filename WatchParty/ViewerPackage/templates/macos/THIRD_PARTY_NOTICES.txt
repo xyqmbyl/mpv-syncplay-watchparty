@@ -1,0 +1,72 @@
+MPV Syncplay - Third-party notices (macOS)
+==========================================
+
+This package contains redistributable binaries and assets from third-party
+projects. The corresponding license texts are in THIRD_PARTY_LICENSES.
+
+mpv
+  Version: v0.41.0 (official macOS build)
+  Binary SHA-256: __MPV_SHA256__
+  Release: https://github.com/mpv-player/mpv/releases/tag/v0.41.0
+  mpv source: https://github.com/mpv-player/mpv/commit/2c219aa822df18a1b7fd9abe3e151cd93ad67307
+  License: GPL-2.0-or-later
+  The binary also contains FFmpeg and other libraries listed by
+  `mpv.app/Contents/MacOS/mpv --version`. See mpv-Copyright.txt for mpv's
+  detailed licensing and component notes.
+
+Python
+  Version: CPython 3.14.7 (python-build-standalone install_only runtime)
+  Source: https://github.com/astral-sh/python-build-standalone/releases/tag/20260901
+  CPython source: https://github.com/python/cpython/tree/v3.14.7
+  License: Python Software Foundation License Version 2
+  The runtime bundles its own OpenSSL and other CPython dependencies.
+
+uosc
+  Version: 5.12.0
+  Source: https://github.com/tomasklaen/uosc/commit/0c8ca8b832270adee7684db6472c86f7aba2b170
+  License: LGPL-2.1
+
+uosc Ziggy helper
+  Binary: portable_config/scripts/uosc/bin/ziggy-darwin
+  SHA-256: __ZIGGY_SHA256__
+  Source: https://github.com/tomasklaen/uosc/tree/0c8ca8b832270adee7684db6472c86f7aba2b170/src/ziggy
+  License: LGPL-2.1
+  Statically linked Go dependencies:
+    github.com/atotto/clipboard v0.1.4 - BSD-3-Clause
+    github.com/pkg/browser 5ac0b6a4141c - BSD-2-Clause
+    golang.org/x/sys v0.28.0 - BSD-3-Clause
+    Go standard library 1.23.1 - BSD-3-Clause
+  Their license texts are the four Ziggy-prefixed files in
+  THIRD_PARTY_LICENSES.
+
+uosc_danmaku
+  Version: 2.2.1 (locally customized build of the upstream plugin)
+  Source: https://github.com/Tony15246/uosc_danmaku
+  License: MIT (Copyright (c) 2024 吴南李)
+  Local changes: the built-in defaults are fontsize 35 and displayarea 0.4,
+    and every danmaku style change made in the plugin menu is saved as the
+    new default in portable_config/script-opts/uosc_danmaku.conf. The plugin
+    is a local OSD overlay only; it never sends playback state over Syncplay.
+
+Material Icons
+  Asset: MaterialIconsRound-Regular.otf
+  Source: https://github.com/google/material-design-icons
+  License: Apache License 2.0
+
+Tailscale
+  Installer version: 1.102.4
+  Installer: https://pkgs.tailscale.com/stable/Tailscale-1.102.4-macos.pkg
+  Source: https://github.com/tailscale/tailscale/commit/3caf7d9e7dcaba589cfc58beda596929733e4fea
+  License for the open-source Tailscale code: BSD-3-Clause
+
+AList
+  Version: v3.64.0, commit 3e49fa4630e668beb76a81e8dd8d55db80b37a69
+  Binary: WatchParty/alist/alist (host package only)
+  Release: https://github.com/AlistGo/alist/releases/tag/v3.64.0
+  Source: https://github.com/AlistGo/alist/tree/3e49fa4630e668beb76a81e8dd8d55db80b37a69
+  License: GNU Affero General Public License Version 3
+
+The host package includes a clean AList executable and configuration template.
+It does not include an AList database, administrator credential, media file,
+machine-specific path, playback history, or Tailscale login credential. The
+viewer package does not include an AList binary at all.

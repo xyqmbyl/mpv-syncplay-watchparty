@@ -6,14 +6,13 @@ The AList provider is intentionally a pure path mapper.  It never reads AList
 configuration, credentials, or management APIs.
 """
 
-import ntpath
 import os
 import posixpath
 from urllib.parse import quote, urlsplit, urlunsplit
 
 
 class MediaProvider:
-    """Map local Windows paths to public AList ``/d/`` URLs."""
+    """Map local paths to public AList ``/d/`` URLs."""
 
     SOURCE_TYPE = "alist"
 
@@ -41,18 +40,18 @@ class MediaProvider:
         local_path = self._normalize_input_path(path)
         if local_path is None:
             return None
-        comparable_path = ntpath.normcase(local_path)
+        comparable_path = os.path.normcase(local_path)
 
         for local_root, comparable_root, virtual_root in self._mappings:
             try:
-                common = ntpath.commonpath((comparable_root, comparable_path))
+                common = os.path.commonpath((comparable_root, comparable_path))
             except ValueError:
                 continue
             if common != comparable_root:
                 continue
 
-            relative = ntpath.relpath(local_path, local_root)
-            if relative == ntpath.curdir:
+            relative = os.path.relpath(local_path, local_root)
+            if relative == os.path.curdir:
                 relative = ""
             relative = relative.replace("\\", "/")
             if relative:
@@ -124,7 +123,7 @@ class MediaProvider:
             local_root, virtual_root = cls._split_mapping(entry)
             local_root = cls._normalize_mapping_root(local_root)
             virtual_root = cls._normalize_virtual_root(virtual_root)
-            comparable_root = ntpath.normcase(local_root)
+            comparable_root = os.path.normcase(local_root)
             normalized[comparable_root] = (
                 local_root,
                 comparable_root,
@@ -179,18 +178,19 @@ class MediaProvider:
     @classmethod
     def _normalize_mapping_root(cls, value):
         text = cls._as_text(value, "AList local root")
-        normalized = ntpath.normpath(text)
-        drive, tail = ntpath.splitdrive(normalized)
-        is_unc = drive.startswith("\\\\")
-        if not ntpath.isabs(normalized) or not drive:
-            raise ValueError("AList local root must be an absolute Windows path")
-        if not is_unc and not tail.startswith(("\\", "/")):
-            raise ValueError("AList local root must be drive-absolute")
+        normalized = os.path.normpath(text)
         if os.name == "nt":
-            # realpath resolves existing junctions/symlinks so they cannot move
-            # the effective sharing boundary outside the configured root.
-            normalized = ntpath.normpath(os.path.realpath(normalized))
-        return normalized
+            drive, tail = os.path.splitdrive(normalized)
+            is_unc = drive.startswith("\\\\")
+            if not os.path.isabs(normalized) or not drive:
+                raise ValueError("AList local root must be an absolute Windows path")
+            if not is_unc and not tail.startswith(("\\", "/")):
+                raise ValueError("AList local root must be drive-absolute")
+        elif not os.path.isabs(normalized):
+            raise ValueError("AList local root must be an absolute path")
+        # realpath resolves existing junctions/symlinks so they cannot move
+        # the effective sharing boundary outside the configured root.
+        return os.path.normpath(os.path.realpath(normalized))
 
     @classmethod
     def _normalize_virtual_root(cls, value):
@@ -214,13 +214,14 @@ class MediaProvider:
         if not text or "\x00" in text:
             return None
 
-        normalized = ntpath.normpath(text)
-        drive, tail = ntpath.splitdrive(normalized)
-        is_unc = drive.startswith("\\\\")
-        if not ntpath.isabs(normalized) or not drive:
-            return None
-        if not is_unc and not tail.startswith(("\\", "/")):
-            return None
+        normalized = os.path.normpath(text)
         if os.name == "nt":
-            normalized = ntpath.normpath(os.path.realpath(normalized))
-        return normalized
+            drive, tail = os.path.splitdrive(normalized)
+            is_unc = drive.startswith("\\\\")
+            if not os.path.isabs(normalized) or not drive:
+                return None
+            if not is_unc and not tail.startswith(("\\", "/")):
+                return None
+        elif not os.path.isabs(normalized):
+            return None
+        return os.path.normpath(os.path.realpath(normalized))

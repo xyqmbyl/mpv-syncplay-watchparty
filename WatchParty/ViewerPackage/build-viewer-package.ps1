@@ -1,40 +1,73 @@
 ﻿[CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
-    [string]$PackageName = "MPV-Syncplay-Viewer",
+    [string]$PackageName = "",
+    [ValidateSet('x64', 'x86')]
+    [string]$Arch = 'x64',
     # 房主地址：Device Sharing 后可访问的 Tailscale IPv4。
-    [Parameter(Mandatory = $true)]
-    [string]$TailscaleHost
+    # 留空则构建"通用包"：不预置地址，观看者首次运行时输入（Release 发布用）。
+    [string]$TailscaleHost = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# AList 与 Tailscale 官方安装包都按架构区分；哈希与包内文件一一对应。
+$tailscaleInstallerName = @{
+    x64 = "tailscale-setup-1.102.3-amd64.msi"
+    x86 = "tailscale-setup-1.102.3-x86.msi"
+}
+$tailscaleInstallerSha256 = @{
+    x64 = "03AC8183C6E3CE276E9B44281EBE7E4C02AEF28A971034CA170C4B665DF42DCE"
+    x86 = "2A46E10F818991CA1476B2947BADB6EA5556541061B5B51C02A39682DE10DF53"
+}
+$tailscaleInstaller = $tailscaleInstallerName[$Arch]
+$tailscaleRequired = 'WatchParty\Tailscale\' + $tailscaleInstaller
+
 $builderDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "..\.."))
+if ([string]::IsNullOrWhiteSpace($PackageName)) {
+    $PackageName = "WatchParty-Viewer-Windows-$Arch"
+}
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $builderDirectory "output"
 }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 
+# x64 包直接复用开发目录里的 64 位运行时；x86 包必须使用 fetch-artifacts.ps1
+# 下载并解包的官方 32 位产物（artifacts\win-x86），绝不能与 x64 混用。
+if ($Arch -eq 'x64') {
+    $nativeRoot = $projectRoot
+} else {
+    $nativeRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "artifacts\win-x86"))
+    if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
+        throw "x86 构建缺少预置产物，请先运行 fetch-artifacts.ps1 下载并解包 Windows x86 依赖。"
+    }
+}
+
 if ($PackageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
     throw "PackageName 只能包含英文字母、数字、点、下划线和连字符。"
 }
-$normalizedHost = $TailscaleHost.Trim()
-$parsedIp = $null
-$isIpv4 = [Net.IPAddress]::TryParse($normalizedHost, [ref]$parsedIp) -and
-    $parsedIp.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork
-$isTailnetIp = $false
-if ($isIpv4) {
-    $octets = $parsedIp.GetAddressBytes()
-    $isTailnetIp = $octets[0] -eq 100 -and $octets[1] -ge 64 -and $octets[1] -le 127
+# 留空 = 通用包（Release 用）：不预置任何地址，由观看者首次运行时输入。
+# 指定地址 = 预配置包（私发用），地址必须是房主的 Tailscale IPv4。
+$normalizedHost = ""
+$alistOrigin = ""
+if (-not [string]::IsNullOrWhiteSpace($TailscaleHost)) {
+    $parsedIp = $null
+    $isIpv4 = [Net.IPAddress]::TryParse($TailscaleHost.Trim(), [ref]$parsedIp) -and
+        $parsedIp.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork
+    $isTailnetIp = $false
+    if ($isIpv4) {
+        $octets = $parsedIp.GetAddressBytes()
+        $isTailnetIp = $octets[0] -eq 100 -and $octets[1] -ge 64 -and $octets[1] -le 127
+    }
+    if (-not $isTailnetIp) {
+        throw "TailscaleHost 必须是房主的 Tailscale IPv4（100.64.0.0/10），或留空构建通用包。"
+    }
+    $normalizedHost = $parsedIp.ToString()
+    # Device Sharing 直连 AList；构建器不会配置 Tailscale Serve 或 Funnel。
+    $alistOrigin = "http://{0}:{1}" -f $normalizedHost, 5244
 }
-if (-not $isTailnetIp) {
-    throw "TailscaleHost 必须是房主的 Tailscale IPv4（100.64.0.0/10）。"
-}
-$normalizedHost = $parsedIp.ToString()
-# Device Sharing 直连 AList；构建器不会配置 Tailscale Serve 或 Funnel。
-$alistOrigin = "http://{0}:{1}" -f $normalizedHost, 5244
 
 $stagePath = [IO.Path]::GetFullPath((Join-Path $outputRoot $PackageName))
 $zipPath = [IO.Path]::GetFullPath((Join-Path $outputRoot ($PackageName + ".zip")))
@@ -93,15 +126,32 @@ $rootFiles = @(
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
     'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll'
 )
+if ($Arch -eq 'x86') {
+    # 官方 i686 mpv 与嵌入式 x86 Python：与 x64 开发目录不同，mpv 需要随包
+    # 携带 FFmpeg/libass 等运行库，Python 嵌入式包只带 vcruntime140.dll。
+    $rootFiles = @(
+        'mpv.exe', 'mpv.com',
+        'avcodec-62.dll', 'avdevice-62.dll', 'avfilter-11.dll',
+        'avformat-62.dll', 'avutil-60.dll',
+        'libass-9.dll', 'libdav1d.dll', 'libfreetype-6.dll', 'libfribidi-0.dll',
+        'libgcc_s_dw2-1.dll', 'libharfbuzz-0.dll', 'libiconv-2.dll',
+        'liblcms2.dll', 'libplacebo-358.dll', 'libshaderc_shared.dll',
+        'libspirv-cross-c-shared.dll', 'libssp-0.dll', 'libstdc++-6.dll',
+        'libwinpthread-1.dll', 'swresample-6.dll', 'swscale-9.dll', 'zlib1.dll',
+        'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
+        'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll',
+        'sqlite3.dll', 'vcruntime140.dll'
+    )
+}
 foreach ($name in $rootFiles) {
-    Copy-PackageFile (Join-Path $projectRoot $name) $name
+    Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 $pythonExtensions = @(
     '_hashlib.pyd', '_overlapped.pyd', '_queue.pyd', '_socket.pyd', '_ssl.pyd',
     '_sqlite3.pyd', 'select.pyd', 'unicodedata.pyd'
 )
 foreach ($name in $pythonExtensions) {
-    Copy-PackageFile (Join-Path $projectRoot $name) $name
+    Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 
 $portableSource = Join-Path $projectRoot 'portable_config'
@@ -136,13 +186,35 @@ Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc_danmaku' $relative)
 }
 
-$tailscaleSource = Join-Path $projectRoot 'WatchParty\Tailscale'
-foreach ($name in @(
-    'tailscale-setup-1.102.3-amd64.msi', 'install-tailscale.bat',
-    'configure-viewer.bat', 'status.bat', 'SOURCE.txt'
-)) {
-    Copy-PackageFile (Join-Path $tailscaleSource $name) (Join-Path 'WatchParty\Tailscale' $name)
+$tailscaleSource = if ($Arch -eq 'x64') {
+    Join-Path $projectRoot 'WatchParty\Tailscale'
+} else {
+    Join-Path $nativeRoot 'Tailscale'
 }
+# Tailscale 官方安装包与辅助脚本。脚本始终取自仓库；MSI 按架构取自对应
+# 产物目录；SOURCE.txt 按架构生成，记录本包携带的安装包与哈希。
+foreach ($name in @('install-tailscale.bat', 'configure-viewer.bat', 'status.bat')) {
+    Copy-PackageFile (Join-Path $projectRoot (Join-Path 'WatchParty\Tailscale' $name)) `
+        (Join-Path 'WatchParty\Tailscale' $name)
+}
+$msiSource = Join-Path $tailscaleSource $tailscaleInstaller
+Copy-PackageFile $msiSource (Join-Path 'WatchParty\Tailscale' $tailscaleInstaller)
+$msiItem = Get-Item -LiteralPath (Join-Path $stagePath (Join-Path 'WatchParty\Tailscale' $tailscaleInstaller))
+$utf8 = New-Object Text.UTF8Encoding($false)
+$tailscaleProvenance = @"
+Tailscale for Windows ($Arch)
+Version: 1.102.3
+Official URL: https://pkgs.tailscale.com/stable/$tailscaleInstaller
+Downloaded: 2026-09-08
+Size: $($msiItem.Length) bytes
+SHA-256: $($tailscaleInstallerSha256[$Arch])
+
+The installer is kept unchanged.  install-tailscale.bat checks the recorded
+SHA-256 hash and the Windows Authenticode signer before launching it.
+"@
+[IO.File]::WriteAllText(
+    (Join-Path $stagePath 'WatchParty\Tailscale\SOURCE.txt'),
+    $tailscaleProvenance, $utf8)
 
 $templateDirectory = Join-Path $builderDirectory 'templates'
 $utf8 = New-Object Text.UTF8Encoding($false)
@@ -208,7 +280,7 @@ $requiredFiles = @(
     'portable_config\scripts\uosc_danmaku\modules\options.lua',
     'portable_config\scripts\uosc_danmaku\modules\render.lua',
     'portable_config\scripts\uosc_danmaku\modules\style.lua',
-    'WatchParty\Tailscale\tailscale-setup-1.102.3-amd64.msi',
+    $tailscaleRequired,
     '观看者首次运行.bat', '启动观看.bat', '观看者使用说明.md',
     'THIRD_PARTY_NOTICES.txt',
     'THIRD_PARTY_LICENSES\mpv-GPL-2.0.txt',
@@ -285,6 +357,31 @@ if ($mpvConfigText -match '(?m)^\s*vf-pre\s*=' -or
     throw "审计失败，观看者包仍启用了房主 VapourSynth/TensorRT 滤镜。"
 }
 
+# PE 机器类型审计：防止 x64/x86 产物混装进同一个包。
+$peMachine = @{ x64 = 0x8664; x86 = 0x014C }
+function Get-PEMachineType {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $reader = New-Object IO.BinaryReader($stream)
+        $stream.Position = 0x3C
+        $peOffset = $reader.ReadInt32()
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw "审计失败，不是有效的 PE 文件：$Path"
+        }
+        return $reader.ReadUInt16()
+    } finally {
+        $stream.Dispose()
+    }
+}
+foreach ($relative in @('mpv.exe', 'python.exe')) {
+    $actualMachine = Get-PEMachineType (Join-Path $stagePath $relative)
+    if ($actualMachine -ne $peMachine[$Arch]) {
+        throw ("审计失败，{0} 的 PE 架构与 -Arch {1} 不符。" -f $relative, $Arch)
+    }
+}
+
 & (Join-Path $stagePath 'python.exe') -c "import argparse, hashlib, json, socket, sqlite3, ssl, threading, urllib.request; print('Python runtime OK')"
 if ($LASTEXITCODE -ne 0) { throw "观看者包内 Python 运行时验证失败。" }
 & (Join-Path $stagePath 'python.exe') (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py') --json verify-installer | Out-Null
@@ -303,13 +400,22 @@ $manifestLines = Get-ChildItem -LiteralPath $stagePath -File -Recurse -Force |
 [IO.File]::WriteAllLines($manifestPath, [string[]]$manifestLines, $utf8)
 
 # Normalize archive timestamps so identical source files and parameters produce
-# an identical ZIP rather than changing on every build.
+# an identical ZIP rather than changing on every build. Processes freshly
+# spawned by smoke tests may still hold handles briefly; retry per file.
 $archiveTimestamp = [DateTime]::SpecifyKind(
     [DateTime]::ParseExact('2026-09-08 00:00:00', 'yyyy-MM-dd HH:mm:ss', $null),
     [DateTimeKind]::Utc
 )
 Get-ChildItem -LiteralPath $stagePath -Force -Recurse | ForEach-Object {
-    $_.LastWriteTimeUtc = $archiveTimestamp
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            $_.LastWriteTimeUtc = $archiveTimestamp
+            break
+        } catch [System.IO.IOException] {
+            if ($attempt -eq 5) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 (Get-Item -LiteralPath $stagePath).LastWriteTimeUtc = $archiveTimestamp
 

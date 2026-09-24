@@ -23,12 +23,16 @@ local options = {
     tailscale_mode = "off",
     tailscale_host = "",
     tailscale_helper = "~~/syncplay/tailscale_integration.py",
-    tailscale_installer = "~~/../WatchParty/Tailscale/tailscale-setup-1.102.3-amd64.msi",
+    tailscale_installer = "",
 }
 pcall(function() require("mp.options").read_options(options, "syncplay_ui") end)
 
 local script_name = mp.get_script_name()
 local config_dir = mp.command_native({"expand-path", "~~/"})
+-- Windows 官方构建里 Python 与 mpv.exe 同级；macOS 包使用
+-- python-build-standalone 的 python/bin/python3。
+local is_windows = mp.get_property("platform") == "windows"
+local python_binary = is_windows and "~~/../python.exe" or "~~/../python/bin/python3"
 
 local function resolve_path(value, fallback)
     if value and value ~= "" then
@@ -37,13 +41,37 @@ local function resolve_path(value, fallback)
     return config_dir .. fallback
 end
 
+local function file_exists(path)
+    local handle = io.open(path, "rb")
+    if handle then
+        handle:close()
+        return true
+    end
+    return false
+end
+
+-- Windows x64 与 x86 包携带的 MSI 文件名不同；按包内实际存在的文件选择。
+local tailscale_installer_default
+if is_windows then
+    for _, name in ipairs({
+        "tailscale-setup-1.102.3-amd64.msi",
+        "tailscale-setup-1.102.3-x86.msi",
+    }) do
+        if file_exists(mp.command_native({"expand-path", "~~/../WatchParty/Tailscale/" .. name})) then
+            tailscale_installer_default = "/../WatchParty/Tailscale/" .. name
+            break
+        end
+    end
+    tailscale_installer_default = tailscale_installer_default
+        or "/../WatchParty/Tailscale/tailscale-setup-1.102.3-amd64.msi"
+else
+    tailscale_installer_default = "/../WatchParty/Tailscale/Tailscale-1.102.4-macos.pkg"
+end
+
 local status_file = resolve_path(options.status_file, "/syncplay/syncplay_status.json")
 local command_file = resolve_path(options.command_file, "/syncplay/syncplay_command.json")
 local tailscale_helper = resolve_path(options.tailscale_helper, "/syncplay/tailscale_integration.py")
-local tailscale_installer = resolve_path(
-    options.tailscale_installer,
-    "/../WatchParty/Tailscale/tailscale-setup-1.102.3-amd64.msi"
-)
+local tailscale_installer = resolve_path(options.tailscale_installer, tailscale_installer_default)
 
 local state = {
     logged = false,
@@ -288,7 +316,7 @@ local function run_tailscale_helper(arguments, callback, silent)
         if not silent then notify("Tailscale 操作正在进行") end
         return false
     end
-    local python = mp.command_native({"expand-path", "~~/../python.exe"})
+    local python = mp.command_native({"expand-path", python_binary})
     local args = {python, tailscale_helper, "--json"}
     for _, value in ipairs(arguments or {}) do args[#args + 1] = tostring(value) end
     tailscale_busy = true
@@ -393,9 +421,12 @@ local function install_tailscale()
             notify(detail)
             return
         end
+        local install_args = is_windows
+            and {"msiexec.exe", "/i", tailscale_installer}
+            or {"open", tailscale_installer}
         mp.command_native_async({
             name = "subprocess",
-            args = {"msiexec.exe", "/i", tailscale_installer},
+            args = install_args,
             playback_only = false,
             detach = true,
         }, function(success, _result, error)
@@ -513,7 +544,7 @@ launch_client = function()
         return
     end
 
-    local python = mp.command_native({"expand-path", "~~/../python.exe"})
+    local python = mp.command_native({"expand-path", python_binary})
     local script = mp.command_native({"expand-path", "~~/syncplay/mpv_syncplay.py"})
     -- Read once more so a client started by the batch launcher can provide
     -- its effective settings before this panel launches a replacement.
@@ -522,9 +553,11 @@ launch_client = function()
     local room = setting_value("room") or "mpv"
     local name = setting_value("name")
     if not name or name == "" or name == "未设置" then name = "MPV用户" end
+    -- `~~` 前缀由客户端解析（Windows 命名管道原样保留，macOS socket 展开）。
+    local pipe_arg = mp.command_native({"expand-path", options.pipe})
     local args = {
         python, script,
-        "--pipe", options.pipe,
+        "--pipe", pipe_arg,
         "--server", server,
         "--room", room,
         "--name", name,

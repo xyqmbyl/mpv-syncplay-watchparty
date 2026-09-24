@@ -1,0 +1,62 @@
+name: 构建发布安装包
+
+# 推送 v* 标签时构建 6 个发布包：Windows x86 房主/观看者、macOS Apple Silicon
+# 与 Intel 各房主/观看者。Windows x64 两个包携带开发机签名的 64 位运行时，
+# 仍由开发机构建后上传到同一个 Release。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x86:
+    name: Windows x86（房主 + 观看者）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 拉取并核对 x86 官方产物
+        shell: pwsh
+        run: ./WatchParty/ViewerPackage/fetch-artifacts.ps1
+      - name: 构建房主包（x86）
+        shell: pwsh
+        run: ./WatchParty/ViewerPackage/build-host-package.ps1 -Arch x86
+      - name: 构建观看者包（x86 通用包）
+        shell: pwsh
+        run: ./WatchParty/ViewerPackage/build-viewer-package.ps1 -Arch x86
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86
+          path: |
+            WatchParty/ViewerPackage/output/*.zip
+            WatchParty/ViewerPackage/output/*.sha256
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 为 Apple Silicon 原生构建；Intel 包在 macos-13 上原生自检。
+          - { os: macos-14, arch: arm64, label: AppleSilicon }
+          - { os: macos-13, arch: intel, label: Intel }
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建房主包
+        run: |
+          chmod +x WatchParty/ViewerPackage/build-macos-package.sh
+          WatchParty/ViewerPackage/build-macos-package.sh --role host --arch ${{ matrix.arch }}
+      - name: 构建观看者包（通用包）
+        run: |
+          WatchParty/ViewerPackage/build-macos-package.sh --role viewer --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.label }}
+          path: |
+            WatchParty/ViewerPackage/output/*.zip
+            WatchParty/ViewerPackage/output/*.sha256
+          if-no-files-found: error
