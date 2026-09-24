@@ -62,8 +62,8 @@ $artifacts = @(
     },
     @{
         Name = "MaterialIconsRound-Regular.otf"
-        Url = "https://raw.githubusercontent.com/google/material-design-icons/master/font/MaterialIconsRound-Regular.otf"
-        Sha256 = "B18FC8D73D5BBF09BBEE2A638D27D76138AEBD5700516118AAB5A284EFB9CF38"
+        Url = "https://raw.githubusercontent.com/google/material-design-icons/27e9ef1dbeedc13d682fece4a58e1eda4cb0961a/font/MaterialIconsRound-Regular.otf"
+        Sha256 = "BAD85E5454B6288104CE03806C37323BCD8F145E3094E727860173AC8C91062E"
     },
     @{
         Name = "uosc_textures.ttf"

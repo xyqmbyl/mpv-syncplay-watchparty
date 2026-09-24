@@ -91,6 +91,14 @@ function Get-RelativePath {
     return $fullPath.Substring($prefix.Length)
 }
 
+$portableSource = Join-Path $projectRoot 'portable_config'
+$iconFont = Join-Path $portableSource 'fonts\MaterialIconsRound-Regular.otf'
+$iconFontSha256 = 'BAD85E5454B6288104CE03806C37323BCD8F145E3094E727860173AC8C91062E'
+if (-not (Test-Path -LiteralPath $iconFont -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $iconFont -Algorithm SHA256).Hash -ne $iconFontSha256) {
+    throw '图标字体缺失或损坏；请重新运行 fetch-artifacts.ps1，避免发布乱码界面。'
+}
+
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 if (Test-Path -LiteralPath $stagePath) {
     Remove-Item -LiteralPath $stagePath -Recurse -Force
@@ -139,7 +147,6 @@ foreach ($name in $pythonExtensions) {
     Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 
-$portableSource = Join-Path $projectRoot 'portable_config'
 foreach ($relative in @(
     'scripts\syncplay_ui.lua',
     'syncplay\mpv_syncplay.py',

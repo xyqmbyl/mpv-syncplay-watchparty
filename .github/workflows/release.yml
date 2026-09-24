@@ -41,9 +41,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 为 Apple Silicon 原生构建；Intel 包在 macos-13 上原生自检。
+          # macos-14 为 Apple Silicon 原生构建；Intel 包在 macos-15-intel 上原生自检。
           - { os: macos-14, arch: arm64, label: AppleSilicon }
-          - { os: macos-13, arch: intel, label: Intel }
+          - { os: macos-15-intel, arch: intel, label: Intel }
     steps:
       - uses: actions/checkout@v4
       - name: 构建房主包

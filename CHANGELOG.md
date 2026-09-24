@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 - 2026-09-25
+
+- Fixed the invalid Material Icons font that made mpv display icon names such
+  as `chevron_right` instead of icons. Windows builds now reject a damaged font.
+- Pinned the font download to a verified upstream commit and corrected its
+  SHA-256 for both Windows and macOS CI builds.
+- Moved the Intel Mac CI job off the retired `macos-13` runner.
+
 ## 0.4.0 - 2026-09-24
 
 - Added macOS packages for Apple Silicon and Intel: `build-macos-package.sh`
