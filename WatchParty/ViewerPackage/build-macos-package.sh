@@ -14,6 +14,7 @@
 # 用包外系统解释器或包内 python/bin/python3 均可）。所有第三方产物先核对
 # SHA-256 再解包；哈希与官方发布值一一对应，任何不匹配立即失败。
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 ROLE=""
 ARCH=""
@@ -187,6 +188,9 @@ mkdir -p "$STAGE/WatchParty/Tailscale" "$STAGE/portable_config/syncplay" \
     "$STAGE/portable_config/fonts"
 ditto "$MPV_APP" "$STAGE/mpv.app"
 cp -R "$WORK/py/python" "$STAGE/python"
+# python-build-standalone 附带预编译缓存；发布包不携带可再生的 .pyc。
+find "$STAGE/python" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find "$STAGE/python" -type d -name __pycache__ -empty -delete
 if [ "$ROLE" = "host" ]; then
     mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media"
     cp "$ALIST_BIN" "$STAGE/WatchParty/alist/alist"
