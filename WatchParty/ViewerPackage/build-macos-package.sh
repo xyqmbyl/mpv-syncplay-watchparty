@@ -204,8 +204,8 @@ SHA-256: $TAILSCALE_PKG_SHA256
 EOF
 
 # uosc 与 darwin 版 ziggy：uosc 5.12.0 官方 zip。
-UOSC_SRC="$(find "$WORK/uosc" -type d -name uosc -print -quit)"
-if [ -z "$UOSC_SRC" ]; then
+UOSC_SRC="$WORK/uosc/scripts/uosc"
+if [ ! -d "$UOSC_SRC" ]; then
     echo "uosc.zip 里找不到 uosc 目录" >&2
     exit 1
 fi
