@@ -9,6 +9,8 @@
 - Moved the Intel Mac CI job off the retired `macos-13` runner.
 - Corrected Windows CI's embedded-Python help check for non-UTF-8 runner locales
   and extracted the nested `mpv.tar.gz` inside official macOS mpv ZIP assets.
+- Fixed macOS staging so the uosc files land at the expected path and viewer
+  packages do not accidentally include the host-only AList service or media.
 
 ## 0.4.0 - 2026-09-24
 

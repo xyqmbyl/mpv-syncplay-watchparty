@@ -182,16 +182,18 @@ fi
 unzip -q "$CACHE_DIR/uosc-$UOSC_VERSION.zip" -d "$WORK/uosc"
 
 # 3. 组装包目录。
-mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media" \
-    "$STAGE/WatchParty/Tailscale" "$STAGE/portable_config/syncplay" \
+mkdir -p "$STAGE/WatchParty/Tailscale" "$STAGE/portable_config/syncplay" \
     "$STAGE/portable_config/scripts" "$STAGE/portable_config/script-opts" \
     "$STAGE/portable_config/fonts"
 ditto "$MPV_APP" "$STAGE/mpv.app"
 cp -R "$WORK/py/python" "$STAGE/python"
-cp "$ALIST_BIN" "$STAGE/WatchParty/alist/alist"
-cp "$REPO_ROOT/WatchParty/alist/config.template.json" \
-    "$STAGE/WatchParty/alist/config.template.json"
-cp "$REPO_ROOT/WatchParty/media/README.txt" "$STAGE/WatchParty/media/README.txt"
+if [ "$ROLE" = "host" ]; then
+    mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media"
+    cp "$ALIST_BIN" "$STAGE/WatchParty/alist/alist"
+    cp "$REPO_ROOT/WatchParty/alist/config.template.json" \
+        "$STAGE/WatchParty/alist/config.template.json"
+    cp "$REPO_ROOT/WatchParty/media/README.txt" "$STAGE/WatchParty/media/README.txt"
+fi
 cp "$CACHE_DIR/$TAILSCALE_PKG_NAME" \
     "$STAGE/WatchParty/Tailscale/$TAILSCALE_PKG_NAME"
 cat > "$STAGE/WatchParty/Tailscale/SOURCE.txt" <<EOF
@@ -207,7 +209,8 @@ if [ -z "$UOSC_SRC" ]; then
     echo "uosc.zip 里找不到 uosc 目录" >&2
     exit 1
 fi
-cp -R "$UOSC_SRC/" "$STAGE/portable_config/scripts/uosc/"
+mkdir -p "$STAGE/portable_config/scripts/uosc"
+cp -R "$UOSC_SRC/." "$STAGE/portable_config/scripts/uosc/"
 UOSC_BIN="$STAGE/portable_config/scripts/uosc/bin"
 if [ -f "$UOSC_BIN/ziggy-darwin" ]; then
     ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
@@ -276,15 +279,21 @@ sed -e "s/__ZIGGY_SHA256__/$ZIGGY_SHA256/" \
     -e "s/__MPV_SHA256__/$MPV_BIN_SHA256/" \
     "$TEMPLATE_DIR/THIRD_PARTY_NOTICES.txt" > "$STAGE/THIRD_PARTY_NOTICES.txt"
 
-chmod +x "$STAGE"/*.command "$STAGE/WatchParty/alist/alist" "$ZIGGY_SRC"
+chmod +x "$STAGE"/*.command "$ZIGGY_SRC"
+if [ "$ROLE" = "host" ]; then
+    chmod +x "$STAGE/WatchParty/alist/alist"
+fi
 
 # 可执行文件签名：保持官方原签名；缺失或失效时补 ad-hoc 瘦签名，避免
 # Gatekeeper 把解压出来的二进制直接当作"已损坏"拒绝运行。
-for bin in "$ZIGGY_SRC" "$STAGE/WatchParty/alist/alist"; do
+for bin in "$ZIGGY_SRC"; do
     if ! codesign --verify "$bin" >/dev/null 2>&1; then
         codesign --force --sign - "$bin" >/dev/null 2>&1 || true
     fi
 done
+if [ "$ROLE" = "host" ] && ! codesign --verify "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1; then
+    codesign --force --sign - "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1 || true
+fi
 
 # 5. 审计：禁止项（机器状态、凭据、媒体、缓存、测试文件、Windows 专用文件）。
 ROLE="$ROLE" "$STAGE/python/bin/python3" - "$STAGE" <<'PY'
@@ -369,7 +378,8 @@ for key, value in expected.items():
 print("房主配置审计通过")
 PY
 
-# AList 配置模板审计：不得携带密钥或数据库配置；必须监听 0.0.0.0:5244。
+# AList 配置模板审计：房主包不得携带密钥或数据库配置。
+if [ "$ROLE" = "host" ]; then
 python3 - "$STAGE/WatchParty/alist/config.template.json" <<'PY'
 import json
 import sys
@@ -387,6 +397,7 @@ scheme = config["scheme"]
 assert scheme["address"] == "0.0.0.0" and int(scheme["http_port"]) == 5244
 print("AList 模板审计通过")
 PY
+fi
 
 # 7. 运行时自检：包内 python、AList、mpv 都要能启动；Tailscale 安装包哈希核对。
 cd "$STAGE"
@@ -394,7 +405,9 @@ cd "$STAGE"
 "$STAGE/python/bin/python3" -B portable_config/syncplay/watchparty_setup.py --help >/dev/null
 "$STAGE/python/bin/python3" -B portable_config/syncplay/mpv_syncplay.py --help >/dev/null
 "$STAGE/python/bin/python3" -B portable_config/syncplay/tailscale_integration.py verify-installer >/dev/null
-"$STAGE/WatchParty/alist/alist" version | grep -F "v$ALIST_VERSION"
+if [ "$ROLE" = "host" ]; then
+    "$STAGE/WatchParty/alist/alist" version | grep -F "v$ALIST_VERSION"
+fi
 "./mpv.app/Contents/MacOS/mpv" --no-config --version >/dev/null
 cd - >/dev/null
 
