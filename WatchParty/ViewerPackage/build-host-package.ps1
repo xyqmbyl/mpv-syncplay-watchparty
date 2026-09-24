@@ -450,9 +450,9 @@ print('Embedded Python runtime OK')
 '@
 & $packagedPython -I -B -c $runtimeCheck
 if ($LASTEXITCODE -ne 0) { throw "房主包内 Python 运行时验证失败。" }
-& $packagedPython -I -B (Join-Path $stagePath 'portable_config\syncplay\watchparty_setup.py') --help | Out-Null
+& $packagedPython -X utf8 -I -B (Join-Path $stagePath 'portable_config\syncplay\watchparty_setup.py') --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "房主首次运行模块无法由包内 Python 加载。" }
-& $packagedPython -I -B (Join-Path $stagePath 'portable_config\syncplay\mpv_syncplay.py') --help | Out-Null
+& $packagedPython -X utf8 -I -B (Join-Path $stagePath 'portable_config\syncplay\mpv_syncplay.py') --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Syncplay 客户端无法由包内 Python 加载。" }
 & $packagedPython -I -B (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py') --json verify-installer | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "房主包内 Tailscale 安装包验证失败。" }

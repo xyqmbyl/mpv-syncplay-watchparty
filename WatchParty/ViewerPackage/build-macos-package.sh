@@ -161,9 +161,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/mpv" "$WORK/py" "$WORK/alist"
 ditto -x -k "$CACHE_DIR/$MPV_NAME" "$WORK/mpv"
-MPV_APP="$(find "$WORK/mpv" -maxdepth 3 -name mpv.app -type d -print -quit)"
+MPV_APP="$(find "$WORK/mpv" -name mpv.app -type d -print -quit)"
 if [ -z "$MPV_APP" ]; then
     echo "mpv 压缩包里找不到 mpv.app" >&2
+    find "$WORK/mpv" -maxdepth 5 -print | head -80 >&2
     exit 1
 fi
 tar -xzf "$CACHE_DIR/$PYTHON_TAR" -C "$WORK/py"
