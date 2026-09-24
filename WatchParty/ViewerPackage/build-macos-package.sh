@@ -188,8 +188,9 @@ mkdir -p "$STAGE/WatchParty/Tailscale" "$STAGE/portable_config/syncplay" \
     "$STAGE/portable_config/fonts"
 ditto "$MPV_APP" "$STAGE/mpv.app"
 cp -R "$WORK/py/python" "$STAGE/python"
-# python-build-standalone 附带预编译缓存；发布包不携带可再生的 .pyc。
-find "$STAGE/python" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+# python-build-standalone 附带缓存、测试源码和 Windows 辅助批处理；
+# 它们都不是 macOS 运行时所需文件，不纳入发布包。
+find "$STAGE/python" -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '*.bat' -o -name 'test_*.py' \) -delete
 find "$STAGE/python" -type d -name __pycache__ -empty -delete
 if [ "$ROLE" = "host" ]; then
     mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media"
