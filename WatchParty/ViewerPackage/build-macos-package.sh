@@ -161,6 +161,11 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/mpv" "$WORK/py" "$WORK/alist"
 ditto -x -k "$CACHE_DIR/$MPV_NAME" "$WORK/mpv"
+# 官方 macOS zip 的唯一顶层条目是 mpv.tar.gz，应用包还需再解一层。
+MPV_TAR="$(find "$WORK/mpv" -name mpv.tar.gz -type f -print -quit)"
+if [ -n "$MPV_TAR" ]; then
+    tar -xzf "$MPV_TAR" -C "$WORK/mpv"
+fi
 MPV_APP="$(find "$WORK/mpv" -name mpv.app -type d -print -quit)"
 if [ -z "$MPV_APP" ]; then
     echo "mpv 压缩包里找不到 mpv.app" >&2

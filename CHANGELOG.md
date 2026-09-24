@@ -8,7 +8,7 @@
   SHA-256 for both Windows and macOS CI builds.
 - Moved the Intel Mac CI job off the retired `macos-13` runner.
 - Corrected Windows CI's embedded-Python help check for non-UTF-8 runner locales
-  and made the macOS mpv bundle lookup work at any archive depth.
+  and extracted the nested `mpv.tar.gz` inside official macOS mpv ZIP assets.
 
 ## 0.4.0 - 2026-09-24
 
