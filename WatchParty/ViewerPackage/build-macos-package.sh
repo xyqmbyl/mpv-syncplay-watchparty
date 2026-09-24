@@ -102,6 +102,11 @@ else
     ARCH_LABEL="Intel"
 fi
 PACKAGE_NAME="WatchParty-$ROLE-macOS-$ARCH_LABEL"
+if [ "$ROLE" = "host" ]; then
+    PACKAGE_NAME="WatchParty-Host-macOS-$ARCH_LABEL"
+else
+    PACKAGE_NAME="WatchParty-Viewer-macOS-$ARCH_LABEL"
+fi
 # tarball 文件名里的 + 需要转义成 %2B。
 PYTHON_URL="$PYTHON_BASE_URL/$(printf '%s' "$PYTHON_TAR" | sed 's/+/%2B/g')"
 MPV_URL="$MPV_BASE_URL/$MPV_NAME"
