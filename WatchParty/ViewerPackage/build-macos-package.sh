@@ -50,6 +50,8 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/templates/macos"
+# 跨平台共用模板（mpv-base.conf 等）与 macOS 专用模板不在同一目录。
+COMMON_TEMPLATE_DIR="$SCRIPT_DIR/templates"
 
 # 固定版本的官方产物（URL + SHA-256 与官方发布值一致）。
 MPV_VERSION="0.41.0"
@@ -298,7 +300,7 @@ DANMAKU_SRC="$REPO_ROOT/portable_config/scripts/uosc_danmaku"
     mkdir -p "$STAGE/portable_config/scripts/uosc_danmaku/$(dirname "$rel")"
     cp "$DANMAKU_SRC/$rel" "$STAGE/portable_config/scripts/uosc_danmaku/$rel"
 done
-cp "$TEMPLATE_DIR/mpv-base.conf" "$STAGE/portable_config/mpv-base.conf"
+cp "$COMMON_TEMPLATE_DIR/mpv-base.conf" "$STAGE/portable_config/mpv-base.conf"
 cp "$TEMPLATE_DIR/mpv.conf" "$STAGE/portable_config/mpv.conf"
 cp "$TEMPLATE_DIR/uosc_danmaku.conf" "$STAGE/portable_config/script-opts/uosc_danmaku.conf"
 if [ "$ROLE" = "host" ]; then

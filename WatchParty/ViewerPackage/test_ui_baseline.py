@@ -102,6 +102,31 @@ SHADER_REFERENCE_SOURCES = (
 )
 SHADER_REFERENCE = re.compile(r"~~/shaders/([^\"';]+)")
 
+# The macOS builder cannot run on Windows, so its source paths are checked
+# statically: a template it copies but that does not exist only surfaces as a
+# failed CI run otherwise. ``VAR="$SCRIPT_DIR/<relative>"`` assignments are read
+# back from the script so these checks follow the builder instead of restating
+# its layout here.
+MACOS_BUILDER = BUILDER_DIR / "build-macos-package.sh"
+BUILDER_DIR_VARIABLE = re.compile(r'^([A-Z_]+)="\$SCRIPT_DIR/([^"]+)"\s*$', re.MULTILINE)
+BUILDER_PATH_REFERENCE = re.compile(r'\$([A-Z_]+)/([^"\s]+)')
+BUILDER_LOOP = re.compile(r"for ([A-Za-z_]+) in (.+?); do(.*?)\bdone\b", re.DOTALL)
+BUILDER_CONTINUATION = re.compile(r"\\\n[ \t]*")
+# Only directories that ship in the repository. The builder's other variables
+# (CACHE_DIR, STAGE, ...) legitimately hold downloaded or generated content that
+# does not exist before a build, so they are deliberately not checked here.
+BUILDER_SOURCE_DIRECTORIES = ("TEMPLATE_DIR", "COMMON_TEMPLATE_DIR", "SCRIPT_DIR", "REPO_ROOT")
+# Directories the builder creates for itself rather than reading from the
+# checkout, so they legitimately do not exist before a build.
+BUILDER_GENERATED_DIRECTORIES = ("output", "artifacts")
+
+
+def builder_loops(text):
+    """Yield (variable, names, body) for each `for VAR in ...; do` in the script."""
+    joined = BUILDER_CONTINUATION.sub(" ", text)
+    for match in BUILDER_LOOP.finditer(joined):
+        yield match.group(1), match.group(2).split(), match.group(3)
+
 
 def shader_references(root):
     """Shipped shader paths, relative to ~~/shaders/, requested by the UI layer."""
@@ -307,6 +332,75 @@ class UiBaselineTests(unittest.TestCase):
                         stripped.startswith("vf-pre") or stripped.startswith("glsl-shaders"),
                         f"{name} enables a local filter/shader: {line}",
                     )
+
+    def test_macos_builder_sources_exist(self):
+        """Every source the macOS builder copies must exist in this checkout."""
+        text = MACOS_BUILDER.read_text(encoding="utf-8")
+        # $SCRIPT_DIR is the builder directory itself; REPO_ROOT is its grandparent.
+        directories = {
+            name: BUILDER_DIR / relative
+            for name, relative in BUILDER_DIR_VARIABLE.findall(text)
+            if name in BUILDER_SOURCE_DIRECTORIES
+        }
+        directories.setdefault("SCRIPT_DIR", BUILDER_DIR)
+        directories.setdefault("REPO_ROOT", REPO_ROOT)
+        self.assertIn("TEMPLATE_DIR", directories, "builder must define TEMPLATE_DIR")
+        self.assertIn("COMMON_TEMPLATE_DIR", directories)
+
+        # Drop the `VAR="$SCRIPT_DIR/..."` assignments themselves: they name the
+        # downloaded/generated directories and are not file loads.
+        body = BUILDER_DIR_VARIABLE.sub("", text)
+
+        # 1. Literal loads such as `cp "$TEMPLATE_DIR/mpv.conf" ...`. A template
+        #    load is always a file; the other roots may legitimately be
+        #    directories (shaders/, scripts/uosc_danmaku/).
+        references = {
+            (variable, relative)
+            for variable, relative in BUILDER_PATH_REFERENCE.findall(body)
+            if variable in directories
+            and "$" not in relative
+            and not (
+                variable == "SCRIPT_DIR"
+                and relative.split("/")[0] in BUILDER_GENERATED_DIRECTORIES
+            )
+        }
+        self.assertTrue(references, "no builder source references found")
+        for variable, relative in sorted(references):
+            target = directories[variable] / relative
+            is_template = variable in ("TEMPLATE_DIR", "COMMON_TEMPLATE_DIR")
+            with self.subTest(source=f"{variable}/{relative}"):
+                self.assertTrue(
+                    target.is_file() if is_template else target.exists(),
+                    f"build-macos-package.sh loads a missing source: {relative}",
+                )
+
+        # 2. `for X in <names>; do cp "$ROOT/<sub>/$X" ...` loops: each listed
+        #    name is a file the package needs, so check them individually.
+        loop_prefixes = {
+            "$TEMPLATE_DIR/": directories["TEMPLATE_DIR"],
+            "$COMMON_TEMPLATE_DIR/": directories["COMMON_TEMPLATE_DIR"],
+            "$REPO_ROOT/portable_config/scripts/": REPO_ROOT / "portable_config" / "scripts",
+            "$REPO_ROOT/portable_config/": REPO_ROOT / "portable_config",
+        }
+        checked = 0
+        for variable, names, loop_body in builder_loops(text):
+            for prefix, base in loop_prefixes.items():
+                if prefix + "$" + variable not in loop_body:
+                    continue
+                self.assertTrue(names, f"empty copy loop for {prefix}")
+                for name in names:
+                    checked += 1
+                    with self.subTest(loop=prefix, name=name):
+                        self.assertTrue(
+                            (base / name).is_file(),
+                            f"build-macos-package.sh copies a missing file: {name}",
+                        )
+        self.assertTrue(checked, "no builder copy loop was checked")
+
+        self.assertTrue(
+            list((directories["SCRIPT_DIR"] / "templates" / "licenses").glob("*.txt")),
+            "third-party license templates are missing",
+        )
 
     def test_extracted_package(self):
         candidate = os.environ.get("WATCHPARTY_UI_PACKAGE")
