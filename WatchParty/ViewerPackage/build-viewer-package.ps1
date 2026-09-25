@@ -2,6 +2,7 @@
 param(
     [string]$OutputDirectory = "",
     [string]$PackageName = "",
+    [string]$NativeRoot = "",
     [ValidateSet('x64', 'x86')]
     [string]$Arch = 'x64',
     # 房主地址：Device Sharing 后可访问的 Tailscale IPv4。
@@ -36,13 +37,15 @@ $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 
 # x64 包直接复用开发目录里的 64 位运行时；x86 包必须使用 fetch-artifacts.ps1
 # 下载并解包的官方 32 位产物（artifacts\win-x86），绝不能与 x64 混用。
-if ($Arch -eq 'x64') {
+if (-not [string]::IsNullOrWhiteSpace($NativeRoot)) {
+    $nativeRoot = [IO.Path]::GetFullPath($NativeRoot)
+} elseif ($Arch -eq 'x64') {
     $nativeRoot = $projectRoot
 } else {
     $nativeRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "artifacts\win-x86"))
-    if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
-        throw "x86 构建缺少预置产物，请先运行 fetch-artifacts.ps1 下载并解包 Windows x86 依赖。"
-    }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
+    throw "缺少 $Arch mpv 运行时：$nativeRoot。请先准备官方产物。"
 }
 
 if ($PackageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
@@ -174,11 +177,17 @@ foreach ($relative in @(
 )) {
     Copy-PackageFile (Join-Path $portableSource $relative) (Join-Path 'portable_config' $relative)
 }
-$uoscSource = Join-Path $portableSource 'scripts\uosc'
-Get-ChildItem -LiteralPath $uoscSource -File -Recurse -Force | ForEach-Object {
-    $relative = Get-RelativePath $uoscSource $_.FullName
+$uoscBaseline = Join-Path $builderDirectory 'ui-baseline\uosc'
+if (-not (Test-Path -LiteralPath (Join-Path $uoscBaseline 'main.lua') -PathType Leaf)) {
+    throw '缺少 v0.3.0 定制 uosc UI 基线，不能构建观看者包。'
+}
+Get-ChildItem -LiteralPath $uoscBaseline -File -Recurse -Force | ForEach-Object {
+    $relative = Get-RelativePath $uoscBaseline $_.FullName
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc' $relative)
 }
+# 平台二进制不属于界面基线；从已核验的官方产物单独补入。
+Copy-PackageFile (Join-Path $portableSource 'scripts\uosc\bin\ziggy-windows.exe') `
+    'portable_config\scripts\uosc\bin\ziggy-windows.exe'
 
 # 弹幕插件 uosc_danmaku（定制版）：纯本地 OSD 覆盖层，只读取本机 time-pos，
 # 不参与 Syncplay 的播放/暂停/跳转同步，房主与观看者可各自独立开关。
@@ -194,7 +203,7 @@ Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object
 }
 
 $tailscaleSource = if ($Arch -eq 'x64') {
-    Join-Path $projectRoot 'WatchParty\Tailscale'
+    Join-Path $nativeRoot 'WatchParty\Tailscale'
 } else {
     Join-Path $nativeRoot 'Tailscale'
 }
@@ -276,6 +285,9 @@ foreach ($file in $batchFiles) {
 $requiredFiles = @(
     'mpv.exe', 'python.exe', 'python314.zip', '_sqlite3.pyd', 'sqlite3.dll',
     'portable_config\scripts\syncplay_ui.lua',
+    'portable_config\scripts\uosc\main.lua',
+    'portable_config\scripts\uosc\elements\Logo.lua',
+    'portable_config\scripts\uosc\bin\ziggy-windows.exe',
     'portable_config\syncplay\mpv_syncplay.py',
     'portable_config\syncplay\media_provider.py',
     'portable_config\syncplay\alist_diagnostics.py',

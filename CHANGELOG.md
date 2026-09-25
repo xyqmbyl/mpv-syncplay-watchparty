@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.2 - 2026-09-25
+
+- Restored the complete customized v0.3.0 uosc player UI, including its
+  playback controls, right-click menu, scaling and danmaku entry points. The
+  Syncplay side panel and synchronization core remain unchanged.
+- Pinned all 29 v0.3.0 uosc UI files in the source tree and added a regression
+  test that compares their SHA-256 hashes with the published v0.3.0 package.
+- Updated Windows and macOS builders to use that UI baseline while supplying
+  only the platform-specific Ziggy helper from the verified upstream archive.
+- Added package-level UI checks to CI so a future dependency refresh cannot
+  silently replace the customized interface again.
+
 ## 0.4.1 - 2026-09-25
 
 - Fixed the invalid Material Icons font that made mpv display icon names such

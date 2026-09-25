@@ -11,6 +11,8 @@ Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增�
   显示范围 0.4，样式修改后自动保存为新的默认值）。
 
 项目不会把 AList 管理员 Token、Cookie 或 Tailscale 登录凭据发送给观看者。
+播放器主界面、右键菜单和联机面板沿用 v0.3.0 的定制 UI；新版仅补入
+Windows/macOS 所需运行组件，打包时会校验 UI 文件，避免上游 uosc 覆盖。
 
 ## 从 GitHub 下载后如何开始两人观看
 
@@ -100,6 +102,7 @@ Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增�
 
 ```powershell
 python -m unittest discover -s portable_config\syncplay -p "test_*.py" -v
+python WatchParty\ViewerPackage\test_ui_baseline.py -v
 ```
 
 可选的真实 mpv IPC 测试：
@@ -125,6 +128,10 @@ Windows（PowerShell，房主/观看者通用）：
 .\WatchParty\ViewerPackage\build-viewer-package.ps1 -Arch x86 -TailscaleHost "100.100.20.30"
 ```
 
+源码检出与本机 mpv 运行目录分开时，Windows x64 构建可加
+`-NativeRoot "D:\已有的mpv目录"`；x86 可指向 `fetch-artifacts.ps1` 准备的
+`artifacts\win-x86`。构建器仍从源码检出复制 v0.3.0 UI。
+
 macOS（bash，区分 Apple Silicon 与 Intel）：
 
 ```bash
@@ -135,7 +142,8 @@ macOS（bash，区分 Apple Silicon 与 Intel）：
 生成目录、ZIP、逐文件清单及 SHA-256 位于
 `WatchParty\ViewerPackage\output`。构建器会拒绝房主配置、AList 数据、媒体、
 历史、日志、缓存和凭据类文件，并做运行时冒烟自检。GitHub Actions 会在
-推送 `v*` 标签时自动构建 x86 Windows 与两个 macOS 包并发布 Release。
+推送 `v*` 标签时自动构建 x86 Windows 与两个 macOS 包；Windows x64 包
+需从已有的 64 位便携运行目录在本机构建，再将全部产物上传到 Release。
 
 ## 兼容性
 

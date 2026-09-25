@@ -4,8 +4,8 @@ param(
     [string]$ProjectRoot = ""
 )
 
-# 预置构建 Windows x86 安装包所需的全部官方产物，并把 uosc 与字体合并进
-# 本仓库的 portable_config（CI 检出没有开发机的 mpv 目录，缺这两样）。
+# 预置构建 Windows x86 安装包所需的官方产物，并把固定的 v0.3.0 uosc
+# 界面、各平台 Ziggy 辅助程序和字体合并进 portable_config。
 #   mpv v0.41.0 官方 i686 构建（内层 zip 含 mpv.exe 与全部运行时 DLL）、
 #   python.org 3.14.2 embed win32、AList v3.64.0 windows-386、
 #   Tailscale 1.102.3 x86 MSI、uosc 5.12.0 官方 zip、
@@ -127,7 +127,7 @@ New-Item -ItemType Directory -Path (Join-Path $targetRoot 'Tailscale') -Force | 
 Copy-Item -LiteralPath (Join-Path $downloadRoot 'tailscale-setup-1.102.3-x86.msi') `
     -Destination (Join-Path $targetRoot 'Tailscale\tailscale-setup-1.102.3-x86.msi') -Force
 
-# uosc 5.12.0：合并进仓库 portable_config\scripts\uosc（已存在时先清掉）。
+# 保留 v0.3.0 的定制 uosc 界面；上游压缩包只提供各平台 Ziggy 辅助程序。
 $uoscExtract = Join-Path $downloadRoot "uosc-extract"
 if (Test-Path -LiteralPath $uoscExtract) {
     Remove-Item -LiteralPath $uoscExtract -Recurse -Force
@@ -137,11 +137,35 @@ $uoscSource = Get-ChildItem -LiteralPath $uoscExtract -Filter 'uosc' -Directory 
 if ($null -eq $uoscSource) {
     throw "uosc 压缩包中找不到 uosc 目录"
 }
+$uoscBaseline = Join-Path $builderDirectory 'ui-baseline\uosc'
+foreach ($required in @('main.lua', 'elements\Logo.lua', 'lib\lang.lua')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $uoscBaseline $required) -PathType Leaf)) {
+        throw "v0.3.0 uosc 界面基线缺少文件：$required"
+    }
+}
+$baselineMainHash = (Get-FileHash -LiteralPath (Join-Path $uoscBaseline 'main.lua') -Algorithm SHA256).Hash
+if ($baselineMainHash -ne '20482D3906000C52DE11D4FFD73D19C530B447AE28A2857BBA6DD072DDEEA319') {
+    throw 'v0.3.0 uosc 界面基线已改变，请核对官方发布包后再继续。'
+}
+$uoscHelpers = Join-Path $uoscSource.FullName 'bin'
+if (-not (Test-Path -LiteralPath (Join-Path $uoscHelpers 'ziggy-windows.exe') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $uoscHelpers 'ziggy-darwin') -PathType Leaf)) {
+    throw 'uosc 官方压缩包缺少 Windows 或 macOS Ziggy 辅助程序。'
+}
 $uoscTarget = Join-Path $projectRoot "portable_config\scripts\uosc"
+$projectFull = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\') + '\'
+$uoscFull = [IO.Path]::GetFullPath($uoscTarget)
+if (-not $uoscFull.StartsWith($projectFull, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "拒绝清理工作区外的 uosc 目录：$uoscFull"
+}
 if (Test-Path -LiteralPath $uoscTarget) {
+    if ((Get-Item -LiteralPath $uoscTarget -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "拒绝清理链接指向的 uosc 目录：$uoscTarget"
+    }
     Remove-Item -LiteralPath $uoscTarget -Recurse -Force
 }
-Copy-Item -LiteralPath $uoscSource.FullName -Destination $uoscTarget -Recurse -Force
+Copy-Item -LiteralPath $uoscBaseline -Destination $uoscTarget -Recurse -Force
+Copy-Item -LiteralPath $uoscHelpers -Destination (Join-Path $uoscTarget 'bin') -Recurse -Force
 
 # 字体：uosc 与 OSD/Danmaku 都依赖 portable_config\fonts 下的三份字体。
 $fontsTarget = Join-Path $projectRoot "portable_config\fonts"
@@ -154,4 +178,4 @@ foreach ($fontName in @('LXGWWenKaiMonoLite-Regular.ttf', 'MaterialIconsRound-Re
 Write-Host ""
 Write-Host "x86 产物已就绪：$targetRoot"
 Get-ChildItem -LiteralPath $targetRoot | ForEach-Object { Write-Host ("  " + $_.Name) }
-Write-Host "uosc 与字体已合并到：$projectRoot\portable_config"
+Write-Host "v0.3.0 定制 uosc、平台辅助程序与字体已合并到：$projectRoot\portable_config"

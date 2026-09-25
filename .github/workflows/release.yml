@@ -26,6 +26,11 @@ jobs:
       - name: 构建观看者包（x86 通用包）
         shell: pwsh
         run: ./WatchParty/ViewerPackage/build-viewer-package.ps1 -Arch x86
+      - name: 核对 v0.3.0 UI（x86 房主与观看者）
+        shell: pwsh
+        run: |
+          python WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Host-Windows-x86
+          python WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Viewer-Windows-x86
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x86
@@ -53,6 +58,10 @@ jobs:
       - name: 构建观看者包（通用包）
         run: |
           WatchParty/ViewerPackage/build-macos-package.sh --role viewer --arch ${{ matrix.arch }}
+      - name: 核对 v0.3.0 UI（房主与观看者）
+        run: |
+          python3 WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Host-macOS-${{ matrix.label }}
+          python3 WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Viewer-macOS-${{ matrix.label }}
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.label }}

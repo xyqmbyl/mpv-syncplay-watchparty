@@ -213,28 +213,32 @@ Official URL: https://pkgs.tailscale.com/stable/$TAILSCALE_PKG_NAME
 SHA-256: $TAILSCALE_PKG_SHA256
 EOF
 
-# uosc 与 darwin 版 ziggy：uosc 5.12.0 官方 zip。
+# 界面始终使用 v0.3.0 发布版的定制 uosc；官方 zip 仅提供 darwin 版 ziggy。
 UOSC_SRC="$WORK/uosc/scripts/uosc"
 if [ ! -d "$UOSC_SRC" ]; then
     echo "uosc.zip 里找不到 uosc 目录" >&2
     exit 1
 fi
+UOSC_BASELINE="$SCRIPT_DIR/ui-baseline/uosc"
+if [ ! -f "$UOSC_BASELINE/main.lua" ] || [ ! -f "$UOSC_BASELINE/elements/Logo.lua" ]; then
+    echo "缺少 v0.3.0 定制 uosc UI 基线，不能构建 macOS 包" >&2
+    exit 1
+fi
 mkdir -p "$STAGE/portable_config/scripts/uosc"
-cp -R "$UOSC_SRC/." "$STAGE/portable_config/scripts/uosc/"
+cp -R "$UOSC_BASELINE/." "$STAGE/portable_config/scripts/uosc/"
 UOSC_BIN="$STAGE/portable_config/scripts/uosc/bin"
-if [ -f "$UOSC_BIN/ziggy-darwin" ]; then
-    ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
-elif [ -f "$UOSC_BIN/ziggy-darwin-arm64" ] && [ "$ARCH" = "arm64" ]; then
-    mv "$UOSC_BIN/ziggy-darwin-arm64" "$UOSC_BIN/ziggy-darwin"
-    ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
-elif [ -f "$UOSC_BIN/ziggy-darwin-x64" ] && [ "$ARCH" = "intel" ]; then
-    mv "$UOSC_BIN/ziggy-darwin-x64" "$UOSC_BIN/ziggy-darwin"
-    ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
+mkdir -p "$UOSC_BIN"
+if [ -f "$UOSC_SRC/bin/ziggy-darwin" ]; then
+    cp "$UOSC_SRC/bin/ziggy-darwin" "$UOSC_BIN/ziggy-darwin"
+elif [ -f "$UOSC_SRC/bin/ziggy-darwin-arm64" ] && [ "$ARCH" = "arm64" ]; then
+    cp "$UOSC_SRC/bin/ziggy-darwin-arm64" "$UOSC_BIN/ziggy-darwin"
+elif [ -f "$UOSC_SRC/bin/ziggy-darwin-x64" ] && [ "$ARCH" = "intel" ]; then
+    cp "$UOSC_SRC/bin/ziggy-darwin-x64" "$UOSC_BIN/ziggy-darwin"
 else
     echo "uosc.zip 里找不到 darwin 版 ziggy" >&2
     exit 1
 fi
-find "$(dirname "$ZIGGY_SRC")" -name 'ziggy-*' ! -name 'ziggy-darwin' -delete
+ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
 
 # 4. 项目文件。
 for f in mpv_syncplay.py media_provider.py alist_diagnostics.py \
