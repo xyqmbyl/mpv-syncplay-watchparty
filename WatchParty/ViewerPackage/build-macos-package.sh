@@ -10,7 +10,8 @@
 #   WatchParty-Host-macOS-AppleSilicon.zip / WatchParty-Host-macOS-Intel.zip
 #   WatchParty-Viewer-macOS-AppleSilicon.zip / WatchParty-Viewer-macOS-Intel.zip
 #
-# 依赖：macOS 自带 curl/ditto/shasum/codesign，以及 python3（仅用于审计，
+# 依赖：macOS 自带 curl/ditto/shasum/codesign、Xcode Command Line Tools，
+# 以及 python3（用于安装应用入口和审计，
 # 用包外系统解释器或包内 python/bin/python3 均可）。所有第三方产物先核对
 # SHA-256 再解包；哈希与官方发布值一一对应，任何不匹配立即失败。
 set -euo pipefail
@@ -255,6 +256,7 @@ DANMAKU_SRC="$REPO_ROOT/portable_config/scripts/uosc_danmaku"
     cp "$DANMAKU_SRC/$rel" "$STAGE/portable_config/scripts/uosc_danmaku/$rel"
 done
 cp "$TEMPLATE_DIR/mpv.conf" "$STAGE/portable_config/mpv.conf"
+cp "$TEMPLATE_DIR/uosc_danmaku.conf" "$STAGE/portable_config/script-opts/uosc_danmaku.conf"
 if [ "$ROLE" = "host" ]; then
     cp "$TEMPLATE_DIR/syncplay_ui.conf" \
         "$STAGE/portable_config/script-opts/syncplay_ui.conf"
@@ -286,13 +288,6 @@ else
         -i "" "$STAGE/观看者首次设置.command" "$STAGE/启动观看.command"
 fi
 
-# Ziggy/ mpv 二进制哈希写进第三方声明。
-ZIGGY_SHA256="$(shasum -a 256 "$ZIGGY_SRC" | awk '{print toupper($1)}')"
-MPV_BIN_SHA256="$(shasum -a 256 "$STAGE/mpv.app/Contents/MacOS/mpv" | awk '{print toupper($1)}')"
-sed -e "s/__ZIGGY_SHA256__/$ZIGGY_SHA256/" \
-    -e "s/__MPV_SHA256__/$MPV_BIN_SHA256/" \
-    "$TEMPLATE_DIR/THIRD_PARTY_NOTICES.txt" > "$STAGE/THIRD_PARTY_NOTICES.txt"
-
 chmod +x "$STAGE"/*.command "$ZIGGY_SRC"
 if [ "$ROLE" = "host" ]; then
     chmod +x "$STAGE/WatchParty/alist/alist"
@@ -308,6 +303,16 @@ done
 if [ "$ROLE" = "host" ] && ! codesign --verify "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1; then
     codesign --force --sign - "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1 || true
 fi
+
+# Finder 双击也要加载应用旁的 portable_config；保留原 mpv 路径供 .command 使用。
+python3 "$SCRIPT_DIR/install_macos_launcher.py" "$STAGE" --arch "$ARCH"
+
+# 签名可能改变二进制内容，必须在签名完成后记录第三方哈希。
+ZIGGY_SHA256="$(shasum -a 256 "$ZIGGY_SRC" | awk '{print toupper($1)}')"
+MPV_BIN_SHA256="$(shasum -a 256 "$STAGE/mpv.app/Contents/MacOS/mpv" | awk '{print toupper($1)}')"
+sed -e "s/__ZIGGY_SHA256__/$ZIGGY_SHA256/" \
+    -e "s/__MPV_SHA256__/$MPV_BIN_SHA256/" \
+    "$TEMPLATE_DIR/THIRD_PARTY_NOTICES.txt" > "$STAGE/THIRD_PARTY_NOTICES.txt"
 
 # 5. 审计：禁止项（机器状态、凭据、媒体、缓存、测试文件、Windows 专用文件）。
 ROLE="$ROLE" "$STAGE/python/bin/python3" - "$STAGE" <<'PY'
@@ -423,6 +428,7 @@ if [ "$ROLE" = "host" ]; then
     "$STAGE/WatchParty/alist/alist" version | grep -F "v$ALIST_VERSION"
 fi
 "./mpv.app/Contents/MacOS/mpv" --no-config --version >/dev/null
+"./mpv.app/Contents/MacOS/watchparty-launcher" --no-config --version >/dev/null
 cd - >/dev/null
 
 # 自检后再次审计，防止运行时缓存混入 ZIP。

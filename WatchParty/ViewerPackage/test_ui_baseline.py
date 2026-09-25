@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import os
 from pathlib import Path
+import plistlib
 import sys
 import unittest
 
@@ -55,6 +56,7 @@ V03_UOSC = {
 }
 
 V03_FONTS = {
+    "LXGWWenKaiMonoLite-Regular.ttf": "03d04443c99a261c5d1ac5cca1ef3e174194a5e1126d05f7a19c33617eb183f3",
     "MaterialIconsRound-Regular.otf": "bad85e5454b6288104ce03806c37323bcd8f145e3094e727860173ac8c91062e",
     "uosc_textures.ttf": "ccc0660f284dfceb5ab31eb363ccb2355df30fcdf628e781ee374b7d4172ada5",
 }
@@ -153,6 +155,13 @@ class UiBaselineTests(unittest.TestCase):
                 self.assertEqual(values.get("auto_start"), "no")
                 self.assertEqual(values.get("alist_virtual_root"), "/media")
 
+    def test_macos_uses_bundled_chinese_font(self):
+        values = parse_conf(TEMPLATE_DIR / "macos" / "mpv.conf")
+        self.assertEqual(values.get("osd-font"), "LXGW WenKai Mono Lite")
+        self.assertEqual(values.get("sub-font"), "LXGW WenKai Mono Lite")
+        danmaku = parse_conf(TEMPLATE_DIR / "macos" / "uosc_danmaku.conf")
+        self.assertEqual(danmaku.get("fontname"), "LXGW WenKai Mono Lite")
+
     def test_extracted_package(self):
         candidate = os.environ.get("WATCHPARTY_UI_PACKAGE")
         if not candidate:
@@ -169,6 +178,16 @@ class UiBaselineTests(unittest.TestCase):
             with self.subTest(font=name):
                 self.assertEqual(sha256(portable / "fonts" / name), expected)
         self.assertEqual(parse_conf(portable / "mpv.conf").get("osc"), "no")
+        if (root / "mpv.app").is_dir():
+            app = root / "mpv.app"
+            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            self.assertEqual(info.get("CFBundleExecutable"), "watchparty-launcher")
+            self.assertTrue(os.access(app / "Contents/MacOS/watchparty-launcher", os.X_OK))
+            values = parse_conf(portable / "mpv.conf")
+            self.assertEqual(values.get("osd-font"), "LXGW WenKai Mono Lite")
+            self.assertEqual(values.get("sub-font"), "LXGW WenKai Mono Lite")
+            danmaku = parse_conf(portable / "script-opts" / "uosc_danmaku.conf")
+            self.assertEqual(danmaku.get("fontname"), "LXGW WenKai Mono Lite")
 
 
 if __name__ == "__main__":

@@ -7,12 +7,19 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: 构建平台（macos 用于修复现有 macOS 发布包）
+        type: choice
+        options: [all, macos]
+        default: all
 
 permissions:
   contents: read
 
 jobs:
   windows-x86:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platforms != 'macos' }}
     name: Windows x86（房主 + 观看者）
     runs-on: windows-latest
     steps:
@@ -51,6 +58,10 @@ jobs:
           - { os: macos-15-intel, arch: intel, label: Intel }
     steps:
       - uses: actions/checkout@v4
+      - name: 验证 macOS 应用入口和字体配置
+        run: |
+          python3 -B WatchParty/ViewerPackage/test_macos_launcher.py
+          python3 -B WatchParty/ViewerPackage/test_ui_baseline.py
       - name: 构建房主包
         run: |
           chmod +x WatchParty/ViewerPackage/build-macos-package.sh
