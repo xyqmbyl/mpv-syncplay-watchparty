@@ -39,9 +39,13 @@ mkdir -p "$PWD/portable_config/_cache/icc" \
          "$PWD/portable_config/_cache/shader" \
          "$PWD/portable_config/_cache/watch_later" 2>/dev/null || true
 
-# 界面图标字体是按 PostScript 名请求的。官方 macOS 版 mpv 的 libass 走 CoreText
-# 字体提供者，不加载 portable_config/fonts，因此把随包字体装到 ~/Library/Fonts
-# （已存在则跳过）。中文字体 LXGW 不安装：体积大且界面未启用该字体。
+# 界面图标字体是按 PostScript 名（MaterialIconsRound-Regular / uosc_textures）请求的。
+# mpv 会把 portable_config/fonts（--sub-fonts-dir 默认的 ~~/fonts）通过 ass_add_font
+# 交给 libass，libass 用自带的 FreeType 内嵌字体提供者解析，与系统字体提供者是哪一套
+# （macOS 上是 CoreText）无关，因此包内字体在 macOS 上本来就生效。
+# 这里再往 ~/Library/Fonts 装一份只是兜底：万一某个第三方 mpv 构建的内嵌字体通道不可用，
+# 系统字体库仍能按 PostScript 名匹配到这两个图标字体。已存在同名字体则不覆盖。
+# 中文字体 LXGW 不安装：已随包提供，且体积较大。
 install_bundled_font() {
     local src="$1" name
     name="$(basename "$src")"
