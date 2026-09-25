@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.3 - 2026-09-25
+
+- macOS 启动脚本（首次设置/日常启动 × 房主/观看者）现在会在运行开始时
+  递归清除本包的 `com.apple.quarantine` 隔离标记：浏览器下载的 ZIP 解压后
+  所有文件都带隔离属性，未公证的 mpv/Python/ziggy/AList 此前会被 macOS
+  直接拒绝运行，表现为双击后没有任何窗口（"UI 不显示"）。
+- 启动脚本新增失败诊断：内置 Python 或 mpv 无法运行时，直接给出可复制的
+  `xattr -cr` 修复命令，而不是静默失败。
+- macOS 使用说明修正 `.command` 的实际位置（解压文件夹顶层，与
+  `WatchParty`、`mpv.app` 平级），并补充 macOS 15 的
+  系统设置 → 隐私与安全性 → "仍要打开" 放行路径（右键打开在新版已失效）。
+
 ## 0.4.2 - 2026-09-25
 
 - Restored the complete customized v0.3.0 uosc player UI, including its

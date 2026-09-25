@@ -5,6 +5,11 @@
 set -u
 cd "$(dirname "$0")"
 
+# 浏览器下载的 ZIP 解压后所有文件都带 macOS 隔离标记，未公证的随包二进制
+# 会被系统直接拒绝运行。先递归清除本包的隔离标记。若双击本文件时被
+# Gatekeeper 拦截，在"系统设置 → 隐私与安全性"里点"仍要打开"一次即可。
+xattr -r -d com.apple.quarantine . >/dev/null 2>&1 || true
+
 export PYTHONIOENCODING=utf-8
 unset PYTHONPATH PYTHONHOME 2>/dev/null
 export PYTHONNOUSERSITE=1
@@ -16,6 +21,12 @@ MPV="./mpv.app/Contents/MacOS/mpv"
 PKG="./WatchParty/Tailscale/Tailscale-1.102.4-macos.pkg"
 if [ ! -x "$PY" ] || [ ! -f "$TS" ] || [ ! -f "$WP" ]; then
     echo "观看者包不完整，请重新完整解压 ZIP。"
+    read -r -p "按回车退出…" _
+    exit 1
+fi
+if ! "$PY" -c "pass" >/dev/null 2>&1; then
+    echo "内置 Python 无法运行。请在终端执行以下命令后重试："
+    echo "  xattr -cr \"\$PWD\""
     read -r -p "按回车退出…" _
     exit 1
 fi
