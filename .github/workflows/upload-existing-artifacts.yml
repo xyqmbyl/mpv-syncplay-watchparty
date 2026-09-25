@@ -1,0 +1,128 @@
+name: 将成功构建的包补传到现有 Release
+
+# 只搬运既有构建产物；不会创建标签或 Release，也不会覆盖已有附件。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 已成功的「构建发布安装包」Actions run ID
+        required: true
+        type: string
+      release_tag:
+        description: 已存在的 Release 标签，例如 v0.4.2
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-artifact-upload-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: 核对构建运行与现有 Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'run_id 必须是正整数' >&2; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9][A-Za-z0-9._-]*$ ]] || { echo 'release_tag 格式无效' >&2; exit 1; }
+
+          run_api="repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
+          conclusion=$(gh api "$run_api" --jq '.conclusion')
+          workflow_id=$(gh api "$run_api" --jq '.workflow_id')
+          head_sha=$(gh api "$run_api" --jq '.head_sha')
+          expected_workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml" --jq '.id')
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq '.sha')
+          [[ "$conclusion" == success ]] || { echo '指定的构建运行未成功' >&2; exit 1; }
+          [[ "$workflow_id" == "$expected_workflow_id" ]] || { echo 'run_id 不是发布包构建工作流' >&2; exit 1; }
+          [[ "$head_sha" == "$tag_sha" ]] || { echo '构建提交与 Release 标签不一致' >&2; exit 1; }
+
+          actual_tag=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')
+          [[ "$actual_tag" == "$RELEASE_TAG" ]] || { echo 'Release 不存在或标签不匹配' >&2; exit 1; }
+
+          existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for name in \
+            WatchParty-Host-Windows-x86.zip WatchParty-Viewer-Windows-x86.zip \
+            WatchParty-Host-macOS-AppleSilicon.zip WatchParty-Viewer-macOS-AppleSilicon.zip \
+            WatchParty-Host-macOS-Intel.zip WatchParty-Viewer-macOS-Intel.zip; do
+            for asset in "$name" "$name.sha256"; do
+              if grep -Fxq -- "$asset" <<< "$existing"; then
+                echo "Release 已有附件，拒绝覆盖：$asset" >&2
+                exit 1
+              fi
+            done
+          done
+
+      - name: 下载 Windows x86 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/windows-x86
+
+      - name: 下载 macOS Apple Silicon 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-AppleSilicon
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/macos-AppleSilicon
+
+      - name: 下载 macOS Intel 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-Intel
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/macos-Intel
+
+      - name: 严格核对 6 个 ZIP 与 SHA-256，再上传
+        shell: bash
+        run: |
+          set -euo pipefail
+          archives=(
+            artifacts/windows-x86/WatchParty-Host-Windows-x86.zip
+            artifacts/windows-x86/WatchParty-Viewer-Windows-x86.zip
+            artifacts/macos-AppleSilicon/WatchParty-Host-macOS-AppleSilicon.zip
+            artifacts/macos-AppleSilicon/WatchParty-Viewer-macOS-AppleSilicon.zip
+            artifacts/macos-Intel/WatchParty-Host-macOS-Intel.zip
+            artifacts/macos-Intel/WatchParty-Viewer-macOS-Intel.zip
+          )
+          files=()
+          for archive in "${archives[@]}"; do
+            sidecar="$archive.sha256"
+            [[ -f "$archive" && -f "$sidecar" ]] || { echo "缺少 ZIP 或校验文件：$archive" >&2; exit 1; }
+            digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+            # Windows PowerShell 写出的 sidecar 是 CRLF；命令替换只去掉 LF。
+            checksum_line=$(cat "$sidecar")
+            checksum_line=${checksum_line%$'\r'}
+            [[ "$checksum_line" == "$digest *${archive##*/}" ]] || {
+              echo "SHA-256 不匹配：$archive" >&2
+              exit 1
+            }
+            files+=("$archive" "$sidecar")
+            echo "校验通过：${archive##*/}"
+          done
+          diff -u \
+            <(printf '%s\n' "${files[@]}" | sort) \
+            <(find artifacts -type f | sort) || { echo '产物中出现未预期文件' >&2; exit 1; }
+
+          # 并发之外仍可能有人手动上传；上传前再次拒绝任何重名附件。
+          existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for file in "${files[@]}"; do
+            if grep -Fxq -- "${file##*/}" <<< "$existing"; then
+              echo "Release 已有附件，拒绝覆盖：${file##*/}" >&2
+              exit 1
+            fi
+          done
+          gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY"
