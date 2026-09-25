@@ -92,6 +92,11 @@ if errorlevel 1 (
 )
 
 :start_mpv
+rem 界面配置把缓存写进 portable_config\_cache\；发布包不带缓存目录，这里按需创建。
+if not exist "%~dp0portable_config\_cache\icc" mkdir "%~dp0portable_config\_cache\icc" >nul 2>&1
+if not exist "%~dp0portable_config\_cache\shader" mkdir "%~dp0portable_config\_cache\shader" >nul 2>&1
+if not exist "%~dp0portable_config\_cache\watch_later" mkdir "%~dp0portable_config\_cache\watch_later" >nul 2>&1
+
 echo.
 echo 设置完成，正在启动 mpv。
 echo 打开面板后设置房间和昵称，再选择“加入 / 连接房间”。

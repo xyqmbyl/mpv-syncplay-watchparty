@@ -165,8 +165,25 @@ foreach ($name in $pythonExtensions) {
     Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 
+# 界面与快捷键层：与本地 portable_config 逐项对齐（主菜单仅去掉 "VF 滤镜"/"着色器"，
+# 快捷键全部保留）。这里逐项显式列出而不是整目录复制，确保 _cache、saved-props.json、
+# danmaku-history.json 等本机运行状态绝不会进入发布包。
 foreach ($relative in @(
     'scripts\syncplay_ui.lua',
+    'scripts\autoload.lua',
+    'scripts\contextmenu_plus.lua',
+    'scripts\copy-paste-URL.lua',
+    'scripts\input_plus.lua',
+    'scripts\mpv360.lua',
+    'scripts\pressaction.lua',
+    'scripts\save_global_props.lua',
+    'scripts\stats_mediainfo.lua',
+    'scripts\thumbfast.lua',
+    'input_uosc.conf',
+    'input_contextmenu_plus.conf',
+    'profiles.conf',
+    'script-opts.conf',
+    'script-opts\mpv360.conf',
     'syncplay\mpv_syncplay.py',
     'syncplay\media_provider.py',
     'syncplay\alist_diagnostics.py',
@@ -202,6 +219,19 @@ Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc_danmaku' $relative)
 }
 
+# 着色器资源：mpv.conf 里自动加载的 glsl-shaders-append / vf-pre 已按要求注释，
+# 包里不会自动启用任何滤镜；但快捷键 Ctrl+1..9、Ctrl+0、Ctrl+` 与 mpv360
+# 仍按本地配置引用 ~~/shaders/，所以把着色器文件一并带上，保证快捷键行为与
+# 本地完全一致（合计约 3.4 MB）。VapourSynth 脚本（vs/）不随包发布。
+$shaderSource = Join-Path $portableSource 'shaders'
+if (-not (Test-Path -LiteralPath (Join-Path $shaderSource 'mpv360.glsl') -PathType Leaf)) {
+    throw '缺少快捷键所需的着色器目录 portable_config\shaders。'
+}
+Get-ChildItem -LiteralPath $shaderSource -File -Recurse -Force | ForEach-Object {
+    $relative = Get-RelativePath $shaderSource $_.FullName
+    Copy-PackageFile $_.FullName (Join-Path 'portable_config\shaders' $relative)
+}
+
 $tailscaleSource = if ($Arch -eq 'x64') {
     Join-Path $nativeRoot 'WatchParty\Tailscale'
 } else {
@@ -235,7 +265,7 @@ SHA-256 hash and the Windows Authenticode signer before launching it.
 $templateDirectory = Join-Path $builderDirectory 'templates'
 $utf8 = New-Object Text.UTF8Encoding($false)
 foreach ($templateName in @(
-    'mpv.conf', 'syncplay_ui.conf', '观看者首次运行.bat', '启动观看.bat',
+    'mpv-base.conf', 'mpv.conf', 'syncplay_ui.conf', '观看者首次运行.bat', '启动观看.bat',
     '观看者使用说明.md', 'THIRD_PARTY_NOTICES.txt'
 )) {
     $templatePath = Join-Path $templateDirectory $templateName
@@ -246,7 +276,9 @@ foreach ($templateName in @(
     $content = $content.Replace('__ALIST_ORIGIN__', $alistOrigin)
     $content = $content.Replace('__TAILSCALE_HOST__', $normalizedHost)
     $destinationName = $templateName
-    if ($templateName -eq 'mpv.conf') {
+    if ($templateName -eq 'mpv-base.conf') {
+        $destinationName = 'portable_config\mpv-base.conf'
+    } elseif ($templateName -eq 'mpv.conf') {
         $destinationName = 'portable_config\mpv.conf'
     } elseif ($templateName -eq 'syncplay_ui.conf') {
         $destinationName = 'portable_config\script-opts\syncplay_ui.conf'
@@ -288,6 +320,23 @@ $requiredFiles = @(
     'portable_config\scripts\uosc\main.lua',
     'portable_config\scripts\uosc\elements\Logo.lua',
     'portable_config\scripts\uosc\bin\ziggy-windows.exe',
+    'portable_config\scripts\autoload.lua',
+    'portable_config\scripts\contextmenu_plus.lua',
+    'portable_config\scripts\copy-paste-URL.lua',
+    'portable_config\scripts\input_plus.lua',
+    'portable_config\scripts\mpv360.lua',
+    'portable_config\scripts\pressaction.lua',
+    'portable_config\scripts\save_global_props.lua',
+    'portable_config\scripts\stats_mediainfo.lua',
+    'portable_config\scripts\thumbfast.lua',
+    'portable_config\mpv.conf',
+    'portable_config\mpv-base.conf',
+    'portable_config\input_uosc.conf',
+    'portable_config\input_contextmenu_plus.conf',
+    'portable_config\profiles.conf',
+    'portable_config\script-opts.conf',
+    'portable_config\script-opts\mpv360.conf',
+    'portable_config\shaders\mpv360.glsl',
     'portable_config\syncplay\mpv_syncplay.py',
     'portable_config\syncplay\media_provider.py',
     'portable_config\syncplay\alist_diagnostics.py',
@@ -370,10 +419,25 @@ $mpvConfigText = [IO.File]::ReadAllText(
     (Join-Path $stagePath 'portable_config\mpv.conf'),
     [Text.Encoding]::UTF8
 )
-if ($mpvConfigText -match '(?m)^\s*vf-pre\s*=' -or
-        $mpvConfigText -match '(?m)^\s*glsl-shaders' -or
-        $mpvConfigText -notmatch '(?m)^speed=1\.0\s*$') {
-    throw "审计失败，观看者包仍启用了房主 VapourSynth/TensorRT 滤镜。"
+$mpvBaseText = [IO.File]::ReadAllText(
+    (Join-Path $stagePath 'portable_config\mpv-base.conf'),
+    [Text.Encoding]::UTF8
+)
+# 覆盖层必须引入共享界面基础配置，否则发布包会退回 mpv 默认界面。
+if ($mpvConfigText -notmatch '(?m)^\s*include\s*=\s*"~~/mpv-base\.conf"\s*$') {
+    throw "审计失败，观看者包 mpv.conf 必须 include 共享基础配置 mpv-base.conf。"
+}
+foreach ($candidate in @(
+    @{ Name = 'mpv.conf'; Text = $mpvConfigText },
+    @{ Name = 'mpv-base.conf'; Text = $mpvBaseText }
+)) {
+    if ($candidate.Text -match '(?m)^\s*vf-pre\s*=' -or
+            $candidate.Text -match '(?m)^\s*glsl-shaders') {
+        throw "审计失败，观看者包 $($candidate.Name) 仍启用了房主 VapourSynth/着色器设置。"
+    }
+}
+if ($mpvConfigText -notmatch '(?m)^speed=1\.0\s*$') {
+    throw "审计失败，观看者包 mpv 配置不应携带原机器的速度设置。"
 }
 
 # PE 机器类型审计：防止 x64/x86 产物混装进同一个包。

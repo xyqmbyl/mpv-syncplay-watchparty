@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
+import re
 import sys
 import unittest
 
@@ -60,6 +61,59 @@ V03_FONTS = {
     "uosc_textures.ttf": "ccc0660f284dfceb5ab31eb363ccb2355df30fcdf628e781ee374b7d4172ada5",
 }
 
+# The published packages carry the author's full local UI, not a minimal config.
+# Each of these files must be staged by every platform builder and must exist in
+# every extracted package.
+UI_LAYER_FILES = (
+    "input_uosc.conf",
+    "input_contextmenu_plus.conf",
+    "profiles.conf",
+    "script-opts.conf",
+    "script-opts/mpv360.conf",
+    "scripts/syncplay_ui.lua",
+    "scripts/autoload.lua",
+    "scripts/contextmenu_plus.lua",
+    "scripts/copy-paste-URL.lua",
+    "scripts/input_plus.lua",
+    "scripts/mpv360.lua",
+    "scripts/pressaction.lua",
+    "scripts/save_global_props.lua",
+    "scripts/stats_mediainfo.lua",
+    "scripts/thumbfast.lua",
+    # The retained shader hotkeys resolve ~~/shaders/... by exact path; without
+    # this file mpv360.lua and the Ctrl+ shortcuts fail at runtime.
+    "shaders/mpv360.glsl",
+)
+
+# The only intentional difference from the author's local menu: these two uosc
+# main-menu groups are removed. Their keybindings stay live.
+REMOVED_MENU_GROUPS = ("VF 滤镜", "着色器")
+
+# Files the local config asks mpv to load; the shared base must reach the package
+# or the shipped UI silently falls back to mpv defaults.
+MPV_BASE_INCLUDE = 'include = "~~/mpv-base.conf"'
+
+# Every ~~/shaders/... path these shipped files mention must exist in the
+# package. mpv resolves the path literally against the config directory and has
+# no fallback search, so a missing file means a visibly broken hotkey.
+SHADER_REFERENCE_SOURCES = (
+    "input_uosc.conf",
+    "scripts/mpv360.lua",
+)
+SHADER_REFERENCE = re.compile(r"~~/shaders/([^\"';]+)")
+
+
+def shader_references(root):
+    """Shipped shader paths, relative to ~~/shaders/, requested by the UI layer."""
+    found = set()
+    for relative in SHADER_REFERENCE_SOURCES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found.update(match.group(1) for match in SHADER_REFERENCE.finditer(text))
+    return found
+
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -85,6 +139,33 @@ def parse_conf(path):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip()
     return values
+
+
+def keybindings(text):
+    """Map a keybinding signature -> list of raw lines for non-menu lines.
+
+    A uosc menu entry is a normal input.conf binding carrying a trailing
+    ``#! Group > Item`` label. Dropping the label removes the menu entry while
+    keeping the binding, so the signature deliberately ignores the label.
+    """
+    bindings = {}
+    for raw in text.splitlines():
+        line = raw.split("#!", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 2 or parts[0] == "#":
+            continue
+        bindings.setdefault((parts[0], parts[1]), []).append(raw)
+    return bindings
+
+
+def menu_labels(text):
+    labels = []
+    for raw in text.splitlines():
+        if "#!" in raw:
+            labels.append(raw.split("#!", 1)[1].strip())
+    return labels
 
 
 def package_root(path):
@@ -161,6 +242,72 @@ class UiBaselineTests(unittest.TestCase):
         danmaku = parse_conf(TEMPLATE_DIR / "macos" / "uosc_danmaku.conf")
         self.assertEqual(danmaku.get("fontname"), "LXGW WenKai Mono Lite")
 
+    def test_shipped_ui_layer_is_complete(self):
+        for relative in UI_LAYER_FILES:
+            with self.subTest(file=relative):
+                self.assertTrue(
+                    (PORTABLE_DIR / relative).is_file(),
+                    f"shipped UI layer is missing {relative}",
+                )
+
+    def test_main_menu_drops_only_the_two_groups(self):
+        labels = menu_labels((PORTABLE_DIR / "input_uosc.conf").read_text(encoding="utf-8"))
+        for group in REMOVED_MENU_GROUPS:
+            with self.subTest(group=group):
+                self.assertFalse(
+                    any(label == group or label.startswith(group + " >") for label in labels),
+                    f"{group} must not appear in the shipped main menu",
+                )
+        # Other groups must still be present, otherwise the menu was gutted.
+        for group in ("截屏", "视频", "工具", "导航", "关于", "加载"):
+            with self.subTest(group=group):
+                self.assertTrue(
+                    any(label == group or label.startswith(group + " >") for label in labels),
+                    f"{group} is missing from the shipped main menu",
+                )
+
+    def test_keybindings_are_not_trimmed(self):
+        # The packages must keep every real binding; only the menu labels change.
+        shipped = keybindings(
+            (PORTABLE_DIR / "input_uosc.conf").read_text(encoding="utf-8")
+        )
+        for keys in (
+            ("~", 'vf'), ("Ctrl+6", "change-list"),
+            ("Ctrl+`", "change-list"), ("Ctrl+s", "screenshot"),
+        ):
+            with self.subTest(key=keys[0]):
+                self.assertIn(keys, shipped, f"{keys[0]} binding lost")
+
+    def test_shader_hotkey_targets_are_shipped(self):
+        # mpv expands ~~/shaders/x literally against the config directory and
+        # never falls back to a subdirectory, so every referenced file must be
+        # present or the hotkey dies with "Failed to open ...".
+        references = shader_references(PORTABLE_DIR)
+        self.assertTrue(references, "no shader references found in the shipped UI layer")
+        for relative in sorted(references):
+            with self.subTest(shader=relative):
+                self.assertTrue(
+                    (PORTABLE_DIR / "shaders" / relative).is_file(),
+                    f"a shipped hotkey references a missing shader: shaders/{relative}",
+                )
+
+    def test_shared_base_config_reaches_every_package(self):
+        base = parse_conf(TEMPLATE_DIR / "mpv-base.conf")
+        self.assertEqual(base.get("input-conf"), '"~~/input_uosc.conf"')
+        self.assertEqual(base.get("osc"), "no")
+        self.assertEqual(base.get("sub-scale"), "1")
+        for name in ("host-mpv.conf", "mpv.conf", "macos/mpv.conf"):
+            with self.subTest(template=name):
+                text = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+                self.assertIn(MPV_BASE_INCLUDE, text)
+                # The overlay must not smuggle the local filters back in.
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    self.assertFalse(
+                        stripped.startswith("vf-pre") or stripped.startswith("glsl-shaders"),
+                        f"{name} enables a local filter/shader: {line}",
+                    )
+
     def test_extracted_package(self):
         candidate = os.environ.get("WATCHPARTY_UI_PACKAGE")
         if not candidate:
@@ -168,6 +315,44 @@ class UiBaselineTests(unittest.TestCase):
         root = package_root(Path(candidate))
         portable = root / "portable_config"
         self.check_uosc(portable / "scripts" / "uosc")
+        for relative in UI_LAYER_FILES:
+            with self.subTest(file=relative):
+                self.assertTrue(
+                    (portable / relative).is_file(),
+                    f"package is missing {relative}",
+                )
+        overlay = (portable / "mpv.conf").read_text(encoding="utf-8")
+        self.assertIn(MPV_BASE_INCLUDE, overlay, "package mpv.conf does not include mpv-base.conf")
+        self.assertEqual(
+            shader_references(portable),
+            shader_references(PORTABLE_DIR),
+            "packaged files reference a different shader set than the source config",
+        )
+        for relative in sorted(shader_references(portable)):
+            with self.subTest(shader=relative):
+                self.assertTrue(
+                    (portable / "shaders" / relative).is_file(),
+                    f"package hotkey references a missing shader: shaders/{relative}",
+                )
+        for line in (portable / "mpv-base.conf").read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            self.assertFalse(
+                stripped.startswith("vf-pre") or stripped.startswith("glsl-shaders"),
+                f"packaged mpv-base.conf enables a local filter/shader: {line}",
+            )
+        shipped_input = (portable / "input_uosc.conf").read_text(encoding="utf-8")
+        self.assertEqual(
+            set(keybindings(shipped_input)),
+            set(keybindings((PORTABLE_DIR / "input_uosc.conf").read_text(encoding="utf-8"))),
+            "packaged keybindings differ from the source config",
+        )
+        labels = menu_labels(shipped_input)
+        for group in REMOVED_MENU_GROUPS:
+            with self.subTest(group=group):
+                self.assertFalse(
+                    any(label == group or label.startswith(group + " >") for label in labels),
+                    f"package menu still contains {group}",
+                )
         self.assertEqual(
             sha256(portable / "scripts" / "syncplay_ui.lua"),
             sha256(PORTABLE_DIR / "scripts" / "syncplay_ui.lua"),

@@ -248,6 +248,49 @@ for f in mpv_syncplay.py media_provider.py alist_diagnostics.py \
 done
 cp "$REPO_ROOT/portable_config/scripts/syncplay_ui.lua" \
     "$STAGE/portable_config/scripts/syncplay_ui.lua"
+
+# 界面与快捷键层：与本地 portable_config 逐项对齐（主菜单仅去掉 "VF 滤镜"/"着色器"，
+# 快捷键全部保留）。逐项显式列出而不是整目录复制，确保 _cache、saved-props.json、
+# danmaku-history.json 等本机运行状态绝不会进入发布包。
+for f in autoload.lua contextmenu_plus.lua copy-paste-URL.lua input_plus.lua \
+         mpv360.lua pressaction.lua save_global_props.lua stats_mediainfo.lua \
+         thumbfast.lua; do
+    cp "$REPO_ROOT/portable_config/scripts/$f" "$STAGE/portable_config/scripts/$f"
+done
+for f in input_uosc.conf input_contextmenu_plus.conf profiles.conf; do
+    cp "$REPO_ROOT/portable_config/$f" "$STAGE/portable_config/$f"
+done
+cp "$REPO_ROOT/portable_config/script-opts/mpv360.conf" \
+    "$STAGE/portable_config/script-opts/mpv360.conf"
+
+# 着色器资源：mpv.conf 里自动加载的 glsl-shaders-append / vf-pre 已按要求注释，
+# 包里不会自动启用任何滤镜；但快捷键 Ctrl+1..9、Ctrl+0、Ctrl+` 与 mpv360
+# 仍按本地配置引用 ~~/shaders/，所以把着色器文件一并带上，保证快捷键行为与
+# 本地完全一致（合计约 3.4 MB）。VapourSynth 脚本（vs/）不随包发布。
+if [ ! -f "$REPO_ROOT/portable_config/shaders/mpv360.glsl" ]; then
+    echo "缺少快捷键所需的着色器目录 portable_config/shaders" >&2
+    exit 1
+fi
+( cd "$REPO_ROOT/portable_config/shaders" && find . -type f ) | while IFS= read -r rel; do
+    mkdir -p "$STAGE/portable_config/shaders/$(dirname "$rel")"
+    cp "$REPO_ROOT/portable_config/shaders/$rel" "$STAGE/portable_config/shaders/$rel"
+done
+
+# uosc 的"打开目录"默认值用 {drives} 枚举盘符，那套实现只在 Windows 上成立
+# （内部调用 fsutil）。macOS 换成 uosc 自带的默认值 ~/，其余内容保持逐字节一致。
+cp "$REPO_ROOT/portable_config/script-opts.conf" \
+    "$STAGE/portable_config/script-opts.conf"
+sed -i '' 's|uosc-default_directory={drives}|uosc-default_directory=~/|' \
+    "$STAGE/portable_config/script-opts.conf"
+if ! grep -q 'uosc-default_directory=~/' "$STAGE/portable_config/script-opts.conf"; then
+    echo "macOS 脚本配置改写失败：uosc-default_directory 未替换为 ~/" >&2
+    exit 1
+fi
+if grep -q '{drives}' "$STAGE/portable_config/script-opts.conf"; then
+    echo "macOS 脚本配置仍残留 Windows 专用 {drives} 占位符" >&2
+    exit 1
+fi
+
 DANMAKU_SRC="$REPO_ROOT/portable_config/scripts/uosc_danmaku"
 ( cd "$DANMAKU_SRC" && find . -type f \
     ! -path './.github/*' ! -name '.gitignore' ! -name '.gitattributes' \
@@ -255,6 +298,7 @@ DANMAKU_SRC="$REPO_ROOT/portable_config/scripts/uosc_danmaku"
     mkdir -p "$STAGE/portable_config/scripts/uosc_danmaku/$(dirname "$rel")"
     cp "$DANMAKU_SRC/$rel" "$STAGE/portable_config/scripts/uosc_danmaku/$rel"
 done
+cp "$TEMPLATE_DIR/mpv-base.conf" "$STAGE/portable_config/mpv-base.conf"
 cp "$TEMPLATE_DIR/mpv.conf" "$STAGE/portable_config/mpv.conf"
 cp "$TEMPLATE_DIR/uosc_danmaku.conf" "$STAGE/portable_config/script-opts/uosc_danmaku.conf"
 if [ "$ROLE" = "host" ]; then
@@ -348,6 +392,37 @@ for root, dirs, files in os.walk(stage):
             if re.search(pattern, rel):
                 raise SystemExit("审计失败，包内含禁止项：%s" % rel)
 print("内容审计通过：%d 个文件" % count)
+PY
+
+# 5b. mpv 配置审计：覆盖层必须 include 共享基础配置；本机自动加载的 vapoursynth
+# 滤镜与 glsl-shaders 不得随包启用（着色器文件本身随包分发，只供 Ctrl+1..9 等
+# 快捷键按需调用，vs/ 依赖不随包发布）；macOS 上也不能残留只在 Windows 成立的
+# {drives} 占位符。
+"$STAGE/python/bin/python3" - "$STAGE" <<'PY'
+import os
+import re
+import sys
+
+stage = sys.argv[1]
+with open(stage + "/portable_config/mpv-base.conf", encoding="utf-8") as handle:
+    base = handle.read()
+with open(stage + "/portable_config/mpv.conf", encoding="utf-8") as handle:
+    overlay = handle.read()
+with open(stage + "/portable_config/script-opts.conf", encoding="utf-8") as handle:
+    script_opts = handle.read()
+
+if not re.search(r'(?m)^\s*include\s*=\s*"~~/mpv-base\.conf"\s*$', overlay):
+    raise SystemExit("审计失败，macOS mpv.conf 必须 include 共享基础配置 mpv-base.conf。")
+for name, text in (("mpv.conf", overlay), ("mpv-base.conf", base)):
+    if re.search(r"(?m)^\s*vf-pre\s*=", text) or re.search(r"(?m)^\s*glsl-shaders", text):
+        raise SystemExit("审计失败，macOS %s 仍启用了原机器的滤镜/着色器设置。" % name)
+if not re.search(r"(?m)^speed=1\.0\s*$", overlay):
+    raise SystemExit("审计失败，macOS mpv 配置不应携带原机器的速度设置。")
+if re.search(r"\{drives\}", script_opts):
+    raise SystemExit("审计失败，macOS script-opts.conf 残留 Windows 专用 {drives} 占位符。")
+if not os.path.isfile(stage + "/portable_config/shaders/mpv360.glsl"):
+    raise SystemExit("审计失败，macOS 包缺少快捷键所需的 portable_config/shaders/mpv360.glsl。")
+print("mpv 配置审计通过")
 PY
 
 # 6. 配置审计：host 是"等待向导改写"的安全初始值；viewer 已写入房主地址。

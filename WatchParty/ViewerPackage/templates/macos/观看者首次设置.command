@@ -101,4 +101,6 @@ fi
 echo
 echo "设置完成，正在启动 mpv。"
 echo "打开面板后设置房间和昵称，再选择“加入 / 连接房间”。"
-exec "$MPV" --config-dir="$PWD/portable_config" --idle=yes --force-window=yes
+# 交给日常启动脚本收尾：它会创建 _cache 目录、把随包界面字体安装到
+# ~/Library/Fonts，再以同样的参数打开 mpv，避免两处启动逻辑不一致。
+exec "./启动观看.command"

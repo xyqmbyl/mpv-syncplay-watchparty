@@ -22,5 +22,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem 界面配置把缓存写进 portable_config\_cache\；发布包不带缓存目录，这里按需创建。
+if not exist "%CD%\portable_config\_cache\icc" mkdir "%CD%\portable_config\_cache\icc" >nul 2>&1
+if not exist "%CD%\portable_config\_cache\shader" mkdir "%CD%\portable_config\_cache\shader" >nul 2>&1
+if not exist "%CD%\portable_config\_cache\watch_later" mkdir "%CD%\portable_config\_cache\watch_later" >nul 2>&1
+
 start "mpv" "%CD%\mpv.exe" --idle=yes --force-window=yes
 exit /b 0
