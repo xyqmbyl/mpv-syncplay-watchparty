@@ -39,7 +39,7 @@ V03_UOSC = {
     "elements/Elements.lua": "f44e57ea4c4c60f82f3775df9337064fdbcb7cb4bc157b47a5c07a12ee8a62c7",
     "elements/Logo.lua": "390e2b154ba90b5dc6771f2511aa32a6cf953ea294df367923a5d0f7eec62b3f",
     "elements/ManagedButton.lua": "da1c1ecf4d145e5c06fb7077a654b1c58412ae106e54b3f5946b919dabd01446",
-    "elements/Menu.lua": "9ad3ea9a462d2facc6a5b1293c16ae81def5d5384220d8dbbd04ddc41611703e",
+    "elements/Menu.lua": "a8c7e681aebf3e08fb6ce9aac2d53720e85ce5dabba329299bd7bce2a5862e21",
     "elements/PauseIndicator.lua": "3f15a46b1a7e74e1f0e23942ff1814b44c2f5fd9d7c9337222a9743271f090c6",
     "elements/Speed.lua": "fee532d01e108cb4d74fbfdedaf91ea2fff81af3b4f3f4e3543fd8aaefa92326",
     "elements/Timeline.lua": "696637de58fecf46035cc688bafdddc34b3bc39c393b356689d101a2a256182a",
