@@ -87,5 +87,73 @@ class LuaActionCoverageTests(unittest.TestCase):
             "notify 应接受第二个参数控制 OSD 时长")
 
 
+class LuaCrashContainmentTests(unittest.TestCase):
+    """单个动作出错不能终止整个脚本。
+
+    mpv 对脚本消息 / 定时器 / 异步回调里未捕获的 Lua 错误会终止整个脚本
+    （日志表现为 "Destroying client handle"）。uosc 是独立脚本仍会继续渲染
+    面板，于是所有点击都在发往一个已经不存在的脚本——用户看到的就是
+    "点击几次后所有点击都失效"。业务入口只允许经 safe_call 调用。
+    """
+
+    def setUp(self):
+        self.lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+        self.text = "\n".join(self.lines)
+
+    def test_safe_call_helper_exists(self):
+        self.assertRegex(
+            self.text,
+            r"local function safe_call\(name, fn",
+            "缺少统一错误隔离入口 safe_call")
+
+    def test_run_action_is_never_called_bare(self):
+        """run_action 唯一的调用点必须经 safe_call（裸调用出错会杀死脚本）。"""
+        offenders = []
+        for number, line in enumerate(self.lines, start=1):
+            code = strip_comment(line)
+            if (re.search(r"(?<![\w.:])run_action\s*\(", code)
+                    and not re.search(r"function\s+run_action\s*\(", code)):
+                offenders.append("%s: %s" % (number, line.strip()))
+        self.assertEqual(
+            offenders, [],
+            "存在未经 safe_call 的 run_action 裸调用：\n  " + "\n  ".join(offenders))
+
+    def test_menu_event_reopens_panel_even_on_error(self):
+        """动作抛错时不能跳过 0.15s 的面板重开定时器。"""
+        self.assertRegex(
+            self.text,
+            r'safe_call\("菜单操作 " \.\. action, run_action, action\)',
+            "syncplay-menu-event 里 run_action 必须经 safe_call 调用")
+        self.assertRegex(
+            self.text,
+            r'mp\.add_timeout\(0\.15, function\(\) if panel_open then '
+            r'safe_call\("刷新面板", open_panel\) end end\)',
+            "动作出错也不能跳过面板重开定时器")
+
+    def test_input_submissions_are_isolated(self):
+        for expected in (
+            r'safe_call\("输入提交", apply_text',
+            r'safe_call\("写入共享地址", configure_tailscale_viewer, query\)',
+            r'safe_call\("切换观看者模式", configure_tailscale_viewer, text\)',
+            r'safe_call\("切换房主模式", activate_host_mode\)',
+        ):
+            self.assertRegex(self.text, expected,
+                             "输入回调必须经 safe_call 隔离：%s" % expected)
+
+    def test_run_helper_watchdog_releases_the_serial_lock(self):
+        """辅助进程回调若永远不来，tailscale_busy 会锁死后续所有网络操作。"""
+        self.assertRegex(
+            self.text, r"local HELPER_TIMEOUT",
+            "必须定义辅助进程超时上限")
+        self.assertRegex(
+            self.text,
+            r"pcall\(mp\.abort_async_command, handle\)",
+            "看门狗超时后必须中止卡死的辅助命令")
+        self.assertRegex(
+            self.text,
+            r"if watchdog then watchdog:kill\(\) end",
+            "辅助进程正常返回后必须撤销看门狗")
+
+
 if __name__ == "__main__":
     unittest.main()

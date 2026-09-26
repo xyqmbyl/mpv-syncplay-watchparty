@@ -274,6 +274,20 @@ local function notify(text, seconds)
     mp.osd_message("Syncplay: " .. text, seconds or 2.5)
 end
 
+-- mpv 对脚本消息、定时器和异步回调里未捕获的 Lua 错误的处置是终止整个
+-- 脚本（"Destroying client handle"）。面板由 uosc 独立绘制，所以表现恰恰
+-- 是"面板还在、点了没反应"：所有点击事件仍在发给一个已经不存在的脚本。
+-- 所有外部入口（菜单事件、输入提交、轮询、辅助进程回调）一律经 safe_call
+-- 调用，单个动作出错只记日志并提示，绝不让它带走整个面板。
+local function safe_call(name, fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        msg.error("操作「" .. tostring(name) .. "」出错: " .. tostring(err))
+        notify("操作失败，请重试；详情见日志", 6)
+    end
+    return ok
+end
+
 local function close_menu()
     if uosc_available then
         mp.commandv("script-message-to", "uosc", "close-menu", menu_kind or "syncplay")
@@ -293,7 +307,7 @@ end
 
 local function refresh_panel_soon()
     if panel_open then
-        mp.add_timeout(0.05, function() if panel_open then open_panel() end end)
+        mp.add_timeout(0.05, function() if panel_open then safe_call("刷新面板", open_panel) end end)
     end
 end
 
@@ -318,6 +332,12 @@ local function apply_tailscale_payload(payload)
     end
 end
 
+-- 串行锁没有免费的兜底：命令异步回调若永远不来，tailscale_busy 会卡死
+-- 后续所有网络操作。看门狗在超时后中止命令（subprocess 会被 mpv 杀掉并
+-- 以失败调用回调），busy 由回调复位，面板保持可用。超时上限取 mac 上
+-- 最慢路径（AList 首启 + 全包隔离清理 + Tailscale 检查）的数倍。
+local HELPER_TIMEOUT = 300
+
 local function run_helper(script, arguments, callback, silent)
     if tailscale_busy then
         if not silent then notify("上一项网络配置还在进行") end
@@ -327,28 +347,38 @@ local function run_helper(script, arguments, callback, silent)
     local args = {python, script, "--json"}
     for _, value in ipairs(arguments or {}) do args[#args + 1] = tostring(value) end
     tailscale_busy = true
-    mp.command_native_async({
+    local watchdog
+    local handle = mp.command_native_async({
         name = "subprocess",
         args = args,
         playback_only = false,
         capture_stdout = true,
         capture_stderr = true,
     }, function(success, result, error)
+        if watchdog then watchdog:kill() end
         tailscale_busy = false
         tailscale_last_refresh = os.time()
-        local raw = type(result) == "table" and result.stdout or ""
-        local parsed_ok, payload = pcall(utils.parse_json, raw or "")
-        if not parsed_ok or type(payload) ~= "table" then payload = nil end
-        apply_tailscale_payload(payload)
-        local process_ok = success and (not result or tonumber(result.status or 0) == 0)
-        local operation_ok = process_ok and payload ~= nil and payload.ok ~= false
-        local detail = (payload and payload.error)
-            or (type(result) == "table" and result.stderr)
-            or error or "配置操作失败"
-        detail = trim(detail)
-        if not operation_ok and detail == "" then detail = "配置操作失败" end
-        if callback then callback(operation_ok, payload, detail) end
-        refresh_panel_soon()
+        safe_call("辅助进程回调", function()
+            local raw = type(result) == "table" and result.stdout or ""
+            local parsed_ok, payload = pcall(utils.parse_json, raw or "")
+            if not parsed_ok or type(payload) ~= "table" then payload = nil end
+            apply_tailscale_payload(payload)
+            local process_ok = success and (not result or tonumber(result.status or 0) == 0)
+            local operation_ok = process_ok and payload ~= nil and payload.ok ~= false
+            local detail = (payload and payload.error)
+                or (type(result) == "table" and result.stderr)
+                or error or "配置操作失败"
+            detail = trim(detail)
+            if not operation_ok and detail == "" then detail = "配置操作失败" end
+            if callback then callback(operation_ok, payload, detail) end
+            refresh_panel_soon()
+        end)
+    end)
+    watchdog = mp.add_timeout(HELPER_TIMEOUT, function()
+        if not tailscale_busy then return end
+        msg.warn("辅助进程超过 " .. HELPER_TIMEOUT .. " 秒未返回，已中止")
+        pcall(mp.abort_async_command, handle)
+        notify("网络配置长时间无响应，已中止；请稍后重试", 6)
     end)
     return true
 end
@@ -667,14 +697,14 @@ launch_client = function()
         end
         read_status()
         if panel_open then
-            mp.add_timeout(0.05, function() if panel_open then open_panel() end end)
+            mp.add_timeout(0.05, function() if panel_open then safe_call("刷新面板", open_panel) end end)
         end
     end)
 end
 
 local function start_or_reconnect()
     if state.logged or state.connecting or client_handle then
-        run_action("reconnect")
+        safe_call("重连房间", run_action, "reconnect")
     else
         launch_client()
     end
@@ -691,9 +721,11 @@ local function apply_text(kind, value)
     if kind == "room" then
         start_or_reconnect()
     elseif kind == "name" or kind == "server" then
-        if state.logged or state.connecting or client_handle then run_action("reconnect") end
+        if state.logged or state.connecting or client_handle then
+            safe_call("重连房间", run_action, "reconnect")
+        end
     end
-    mp.add_timeout(0.05, function() if panel_open then open_panel() end end)
+    mp.add_timeout(0.05, function() if panel_open then safe_call("刷新面板", open_panel) end end)
 end
 
 local function action_value(action)
@@ -1133,7 +1165,7 @@ function open_panel()
 end
 
 function toggle_panel()
-    open_panel()
+    safe_call("打开面板", open_panel)
 end
 
 mp.register_script_message("uosc-version", function()
@@ -1155,9 +1187,10 @@ mp.register_script_message("syncplay-menu-event", function(json)
     if type(value) ~= "string" then return end
     local action = value:match("^syncplay%-action:(.+)$")
     if action then
-        run_action(action)
+        safe_call("菜单操作 " .. action, run_action, action)
+        -- 出错也不能跳过重开：否则面板停留在旧状态，看起来像"点了没反应"。
         if action ~= "close" then
-            mp.add_timeout(0.15, function() if panel_open then open_panel() end end)
+            mp.add_timeout(0.15, function() if panel_open then safe_call("刷新面板", open_panel) end end)
         end
     end
 end)
@@ -1166,7 +1199,7 @@ end)
 -- by uosc's dynamic `(query, menu_id)` pair.  Keep this order in sync with
 -- the command array above.
 mp.register_script_message("syncplay-input-submit", function(kind, query, _menu_id)
-    apply_text(kind or "room", query)
+    safe_call("输入提交", apply_text, kind or "room", query)
 end)
 
 mp.register_script_message("syncplay-tailscale-host-submit", function(query, _menu_id)
@@ -1174,7 +1207,7 @@ mp.register_script_message("syncplay-tailscale-host-submit", function(query, _me
         notify("当前不是观看者配置，已忽略房主地址输入")
         return
     end
-    configure_tailscale_viewer(query)
+    safe_call("写入共享地址", configure_tailscale_viewer, query)
 end)
 
 -- 「运行模式」的 palette 输入：既能填房主的 100.x 地址（切到观看者），
@@ -1187,18 +1220,20 @@ mp.register_script_message("syncplay-mode-submit", function(query, _menu_id)
     end
     local lowered = text:lower()
     if lowered == "房主" or lowered == "房主模式" or lowered == "host" then
-        activate_host_mode()
+        safe_call("切换房主模式", activate_host_mode)
         return
     end
-    configure_tailscale_viewer(text)
+    safe_call("切换观看者模式", configure_tailscale_viewer, text)
 end)
 
 local function poll_status()
-    local changed = read_status()
-    if changed and panel_open and menu_kind == "syncplay" then open_panel() end
-    if panel_open and not tailscale_busy and os.time() - tailscale_last_refresh >= 10 then
-        refresh_tailscale_status(true)
-    end
+    safe_call("状态轮询", function()
+        local changed = read_status()
+        if changed and panel_open and menu_kind == "syncplay" then open_panel() end
+        if panel_open and not tailscale_busy and os.time() - tailscale_last_refresh >= 10 then
+            refresh_tailscale_status(true)
+        end
+    end)
 end
 
 mp.add_periodic_timer(0.5, poll_status)
