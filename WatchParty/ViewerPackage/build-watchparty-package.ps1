@@ -758,23 +758,134 @@ Get-ChildItem -LiteralPath $stagePath -Force -Recurse | ForEach-Object {
 }
 (Get-Item -LiteralPath $stagePath).LastWriteTimeUtc = $archiveTimestamp
 
+# ZIP 规范（APPNOTE 4.4.17）要求条目名一律使用正斜杠分隔。Windows PowerShell 5.1
+# 自带的 .NET Framework 版 ZipFile::CreateFromDirectory 会写入反斜杠分隔符，产出
+# 不合规归档：资源管理器与部分第三方解压器会把整串路径当成单个文件名，于是出现
+# “未指定的错误 (0x80004005)”之类的中断。这里改为显式写入条目：正斜杠路径、
+# 补上目录条目、补上文件属性，并固定排序，产出规范且可复现的归档。
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+function Write-PackageZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][DateTime]$Timestamp
+    )
+
+    $rootFull = [IO.Path]::GetFullPath($Root)
+    # 与 ZipFile::CreateFromDirectory(..., $true) 的归档布局保持一致：所有条目都
+    # 位于一个以包名命名的顶层目录之下，解压后得到独立文件夹而不是散落一地。
+    $baseName = Split-Path -Leaf $rootFull
+    # 按完整路径字符串排序：父目录一定排在自己的子项之前，解压器可顺序建目录。
+    $items = @(Get-ChildItem -LiteralPath $rootFull -Force -Recurse | Sort-Object -Property FullName)
+
+    $stream = [IO.File]::Open(
+        $Destination,
+        [IO.FileMode]::Create,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
+    )
+    try {
+        $archive = New-Object IO.Compression.ZipArchive(
+            $stream,
+            [IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+        try {
+            # 顶层目录条目本身也要显式写入，解压器据此创建根文件夹。
+            $rootEntry = $archive.CreateEntry(
+                $baseName + '/',
+                [IO.Compression.CompressionLevel]::NoCompression
+            )
+            # 040755 << 16 | FILE_ATTRIBUTE_DIRECTORY
+            $rootEntry.ExternalAttributes = [int]0x41ED0010
+            $rootEntry.LastWriteTime = [DateTimeOffset]$Timestamp
+
+            foreach ($item in $items) {
+                $relative = $baseName + '/' +
+                    (Get-RelativePath $rootFull $item.FullName).Replace('\', '/')
+                if ($item.PSIsContainer) {
+                    $entry = $archive.CreateEntry(
+                        $relative + '/',
+                        [IO.Compression.CompressionLevel]::NoCompression
+                    )
+                    # 040755 << 16 | FILE_ATTRIBUTE_DIRECTORY
+                    $entry.ExternalAttributes = [int]0x41ED0010
+                } else {
+                    $entry = $archive.CreateEntry(
+                        $relative,
+                        [IO.Compression.CompressionLevel]::Optimal
+                    )
+                    # 0100644 << 16 | FILE_ATTRIBUTE_ARCHIVE
+                    $entry.ExternalAttributes = [int]0x81A40020
+                }
+                # Create 模式下条目一旦被打开写入就不能再修改元数据，
+                # 因此时间戳必须在这里设置，早于下面的 Open()。
+                $entry.LastWriteTime = [DateTimeOffset]$Timestamp
+
+                if (-not $item.PSIsContainer) {
+                    $entryStream = $entry.Open()
+                    try {
+                        $source = [IO.File]::Open(
+                            $item.FullName,
+                            [IO.FileMode]::Open,
+                            [IO.FileAccess]::Read,
+                            [IO.FileShare]::ReadWrite
+                        )
+                        try {
+                            $source.CopyTo($entryStream)
+                        } finally {
+                            $source.Dispose()
+                        }
+                    } finally {
+                        $entryStream.Dispose()
+                    }
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 for ($attempt = 1; $attempt -le 8; $attempt++) {
     try {
         if (Test-Path -LiteralPath $zipPath) {
             Remove-Item -LiteralPath $zipPath -Force
         }
-        [IO.Compression.ZipFile]::CreateFromDirectory(
-            $stagePath,
-            $zipPath,
-            [IO.Compression.CompressionLevel]::Optimal,
-            $true
-        )
+        Write-PackageZip -Root $stagePath -Destination $zipPath -Timestamp $archiveTimestamp
         break
     } catch [System.IO.IOException] {
         if ($attempt -eq 8) { throw }
         Start-Sleep -Milliseconds 1500
     }
+}
+
+# 归档规范自检：条目名不得出现反斜杠，目录条目必须存在，且不得有重复条目。
+$verifyArchive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+try {
+    $entryNames = @($verifyArchive.Entries | ForEach-Object { $_.FullName })
+} finally {
+    $verifyArchive.Dispose()
+}
+$badNames = @($entryNames | Where-Object { $_.Contains('\') })
+if ($badNames.Count -gt 0) {
+    throw "归档自检失败：$($badNames.Count) 个条目名仍含反斜杠分隔符，例如 $($badNames[0])"
+}
+$duplicated = @($entryNames | Group-Object | Where-Object { $_.Count -gt 1 })
+if ($duplicated.Count -gt 0) {
+    throw "归档自检失败：条目名重复，例如 $($duplicated[0].Name)"
+}
+$directoryEntries = @($entryNames | Where-Object { $_.EndsWith('/') })
+if ($directoryEntries.Count -eq 0) {
+    throw "归档自检失败：缺少目录条目，部分解压器会因此无法还原目录结构。"
+}
+$outsideRoot = @($entryNames | Where-Object { $_ -notlike "$PackageName/*" })
+if ($outsideRoot.Count -gt 0) {
+    throw "归档自检失败：条目未位于顶层目录 $PackageName/ 之下，例如 $($outsideRoot[0])"
 }
 $zipHash = (Get-FileHashRetry $zipPath).ToLowerInvariant()
 [IO.File]::WriteAllText($zipPath + '.sha256', "$zipHash *$([IO.Path]::GetFileName($zipPath))`r`n", $utf8)
