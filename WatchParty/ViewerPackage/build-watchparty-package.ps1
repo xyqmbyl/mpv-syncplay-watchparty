@@ -167,6 +167,7 @@ $rootFiles = @(
     'mpv.exe', 'mpv.com',
     'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
     'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll',
+    'libffi-8.dll',
     'sqlite3.dll',
     'concrt140.dll',
     'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
@@ -187,18 +188,23 @@ if ($Arch -eq 'x86') {
         'libwinpthread-1.dll', 'swresample-6.dll', 'swscale-9.dll', 'zlib1.dll',
         'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
         'python314._pth', 'python.cat', 'libcrypto-3.dll', 'libssl-3.dll',
+        'libffi-8.dll',
         'sqlite3.dll', 'vcruntime140.dll'
     )
 }
 foreach ($name in $rootFiles) {
     Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
-$pythonExtensions = @(
-    '_hashlib.pyd', '_overlapped.pyd', '_queue.pyd', '_socket.pyd', '_ssl.pyd',
-    '_sqlite3.pyd', 'select.pyd', 'unicodedata.pyd'
-)
-foreach ($name in $pythonExtensions) {
-    Copy-PackageFile (Join-Path $nativeRoot $name) $name
+# 嵌入式 Python 的 C 扩展模块。此前是硬编码白名单，漏掉了 _ctypes.pyd——
+# watchparty_setup.py 的提权路径（ShellExecuteExW）依赖 ctypes，包内缺失时
+# 面板选「房主模式」必然 ModuleNotFoundError。改为通配复制源运行时的全部
+# .pyd，不再维护手工清单。
+$packagedPyds = @(Get-ChildItem -LiteralPath $nativeRoot -Filter '*.pyd' -File)
+if ($packagedPyds.Count -lt 10) {
+    throw "源运行时目录只找到 $($packagedPyds.Count) 个 .pyd（$nativeRoot），不是完整的嵌入式 Python。"
+}
+foreach ($pyd in $packagedPyds) {
+    Copy-PackageFile $pyd.FullName $pyd.Name
 }
 
 foreach ($relative in @(
@@ -400,7 +406,7 @@ foreach ($file in $batchFiles) {
 $requiredFiles = @(
     'mpv.exe', 'mpv.com',
     'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll', 'python314.zip',
-    'python314._pth', '_sqlite3.pyd', 'sqlite3.dll',
+    'python314._pth', '_sqlite3.pyd', '_ctypes.pyd', 'sqlite3.dll',
     'WatchParty\alist\alist.exe',
     'WatchParty\alist\config.template.json',
     'WatchParty\media\README.txt',
@@ -594,7 +600,7 @@ foreach ($relative in @('mpv.exe', 'python.exe', 'WatchParty\alist\alist.exe')) 
 # 运行时自检：Python、AList、mpv、Tailscale 安装包签名。
 $packagedPython = Join-Path $stagePath 'python.exe'
 $runtimeCheck = @'
-import argparse, hashlib, json, os, socket, sqlite3, ssl, sys, threading, urllib.request
+import argparse, ctypes, hashlib, json, os, socket, sqlite3, ssl, sys, threading, urllib.request
 root = os.path.normcase(os.path.realpath(os.path.dirname(sys.executable)))
 assert sys.flags.isolated and sys.flags.ignore_environment
 for entry in sys.path:
@@ -603,6 +609,8 @@ for entry in sys.path:
 connection = sqlite3.connect(':memory:')
 connection.execute('select 1').fetchone()
 connection.close()
+# ctypes 是房主模式提权（ShellExecuteExW）的前置依赖，import 失败即缺 .pyd。
+assert sys.platform != 'win32' or hasattr(ctypes, 'windll')
 print('Embedded Python runtime OK')
 '@
 Invoke-PackagedCommand -FilePath $packagedPython -Arguments @('-I', '-B', '-c', $runtimeCheck) `

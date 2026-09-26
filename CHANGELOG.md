@@ -16,6 +16,16 @@
 - 切换运行模式的过程不再产生第二个 mpv 窗口，配置在内存中即时生效。
 - 构建脚本与 CI 同步为 4 个合并包：Windows x64/x86 与 macOS
   AppleSilicon/Intel，每个包附同名 `.sha256` 校验文件。
+- 修复 Windows 包解压到一半报「未指定的错误 (0x80004005)」的问题：Windows
+  PowerShell 5.1 的 `ZipFile::CreateFromDirectory` 会把归档条目名写成反斜杠
+  分隔（`dir\file`），不符合 ZIP 规范，资源管理器与部分解压器会把整串路径当成
+  单个非法文件名。现在改为规范的正斜杠条目名，并补上目录条目与文件属性；
+  包内文件内容与之前逐字节一致，v0.5.0 的 Windows 附件已就地替换（未另发版本）。
+- 修复 Windows 包内置 Python 缺少 `_ctypes.pyd` 与 `libffi-8.dll` 的问题：
+  在面板选择「房主模式」触发防火墙提权时，`watchparty_setup.py` 会直接
+  `ModuleNotFoundError`/`ImportError` 崩溃（首次运行向导、观看者模式与仅本机
+  观看不受影响）。构建脚本改为通配携带源运行时的全部 `.pyd` 与 `libffi-8.dll`，
+  并把 `import ctypes` 纳入构建自检，防止再漏带扩展模块。
 
 ## 0.4.3 - 2026-09-25
 
