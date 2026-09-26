@@ -1,7 +1,7 @@
 #!/bin/bash
-# WatchParty 房主首次设置（macOS）。
-# 作用与 Windows 包的 房主首次运行.bat 相同：启动随包 AList、自动配置
-# 匿名共享并检测 Tailscale，最后把媒体地址写入观看者要使用的配置。
+# WatchParty 首次设置（macOS）。
+# 作用与 Windows 包的 首次运行.bat 相同：准备房主/观看者共用的前置条件
+# （主要是 Tailscale），角色本身在 mpv 面板的「联机 → 运行模式」里选择。
 set -u
 cd "$(dirname "$0")"
 
@@ -30,11 +30,11 @@ if ! "$PY" -c "pass" >/dev/null 2>&1; then
 fi
 
 echo "============================================================"
-echo "  WatchParty 房主首次设置（macOS）"
+echo "  WatchParty 首次设置（macOS）：房主 / 观看者共用"
 echo "============================================================"
 echo
 
-"$PY" "$SETUP" full --install-tailscale
+"$PY" "$SETUP" bootstrap
 RESULT=$?
 echo
 read -r -p "按回车退出…" _

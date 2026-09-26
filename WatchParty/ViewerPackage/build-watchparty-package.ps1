@@ -2,13 +2,15 @@
 param(
     [string]$OutputDirectory = "",
     [string]$PackageName = "",
-    [string]$NativeRoot = "",
     [ValidateSet('x64', 'x86')]
-    [string]$Arch = 'x64'
+    [string]$Arch = 'x64',
+    [string]$NativeRoot = ""
 )
 
-# 构建房主完整包：mpv + 嵌入式 Python + 随包 AList + 首次运行向导。
-# 房主地址不写死在包里：首次运行向导会检测本机 Tailscale IPv4 并自动写入。
+# 构建 WatchParty 合并包：mpv + 嵌入式 Python + 随包 AList + Tailscale。
+# 房主与观看者共用同一个包：包内初始为「未选择模式、不共享」的安全状态，
+# 首次运行后按 Ctrl+Shift+S -> 联机 -> 运行模式 选择房主或观看者。
+# 房主地址不写死在包里：切换房主模式时会检测本机 Tailscale IPv4 并自动写入。
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -34,15 +36,16 @@ $tailscaleRequired = 'WatchParty\Tailscale\' + $tailscaleInstaller
 $builderDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "..\.."))
 if ([string]::IsNullOrWhiteSpace($PackageName)) {
-    $PackageName = "WatchParty-Host-Windows-$Arch"
+    $PackageName = "WatchParty-Windows-$Arch"
 }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $builderDirectory "output"
 }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 
-# x64 包直接复用开发目录里的 64 位运行时；x86 包必须使用 fetch-artifacts.ps1
-# 下载并解包的官方 32 位产物（artifacts\win-x86），绝不能与 x64 混用。
+# 仓库本身不携带 mpv/Python/AList 等二进制：CI 上由 fetch-artifacts.ps1 把它们
+# 放进仓库根目录，本机构建则可以用 -NativeRoot 借用已解包的发行目录。
+# x86 必须使用 fetch-artifacts.ps1 下载并解包的官方 32 位产物，绝不能与 x64 混用。
 if (-not [string]::IsNullOrWhiteSpace($NativeRoot)) {
     $nativeRoot = [IO.Path]::GetFullPath($NativeRoot)
 } elseif ($Arch -eq 'x64') {
@@ -50,8 +53,9 @@ if (-not [string]::IsNullOrWhiteSpace($NativeRoot)) {
 } else {
     $nativeRoot = [IO.Path]::GetFullPath((Join-Path $builderDirectory "artifacts\win-x86"))
 }
-if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
-    throw "缺少 $Arch mpv 运行时：$nativeRoot。请先准备官方产物。"
+if ($Arch -eq 'x86' -and
+        -not (Test-Path -LiteralPath (Join-Path $nativeRoot 'mpv.exe') -PathType Leaf)) {
+    throw "x86 构建缺少预置产物，请先运行 fetch-artifacts.ps1 下载并解包 Windows x86 依赖。"
 }
 
 if ($PackageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
@@ -92,6 +96,53 @@ function Get-RelativePath {
         throw "路径不在预期目录内：$Path"
     }
     return $fullPath.Substring($prefix.Length)
+}
+
+# 刚刚复制进暂存目录的二进制（尤其是 100 MB 级的 alist.exe）可能被杀毒软件或
+# 索引服务短暂占用，导致哈希计算或启动自检偶发失败。统一做有限次重试，
+# 让构建在正常的机器负载下保持稳定，而不是随机中断。
+function Get-FileHashRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Attempts = 6,
+        [int]$DelayMilliseconds = 1000
+    )
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction SilentlyContinue
+        if ($null -ne $hash) {
+            $hex = [string]$hash.Hash
+            if (-not [string]::IsNullOrEmpty($hex)) {
+                return $hex
+            }
+        }
+        Start-Sleep -Milliseconds $DelayMilliseconds
+    }
+    throw "无法计算文件哈希（文件可能被其他进程占用）：$Path"
+}
+
+function Invoke-PackagedCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage,
+        [int]$Attempts = 6,
+        [int]$DelayMilliseconds = 1000
+    )
+    $lastError = ''
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $lastError = ''
+        try {
+            $output = & $FilePath @Arguments 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                return (@($output) -join "`n")
+            }
+            $lastError = "退出码 $LASTEXITCODE"
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds $DelayMilliseconds
+    }
+    throw "$FailureMessage（最后一次错误：$lastError）"
 }
 
 $portableSource = Join-Path $projectRoot 'portable_config'
@@ -150,25 +201,8 @@ foreach ($name in $pythonExtensions) {
     Copy-PackageFile (Join-Path $nativeRoot $name) $name
 }
 
-# 界面与快捷键层：与本地 portable_config 逐项对齐（主菜单仅去掉 "VF 滤镜"/"着色器"，
-# 快捷键全部保留）。这里逐项显式列出而不是整目录复制，确保 _cache、saved-props.json、
-# danmaku-history.json 等本机运行状态绝不会进入发布包。
 foreach ($relative in @(
     'scripts\syncplay_ui.lua',
-    'scripts\autoload.lua',
-    'scripts\contextmenu_plus.lua',
-    'scripts\copy-paste-URL.lua',
-    'scripts\input_plus.lua',
-    'scripts\mpv360.lua',
-    'scripts\pressaction.lua',
-    'scripts\save_global_props.lua',
-    'scripts\stats_mediainfo.lua',
-    'scripts\thumbfast.lua',
-    'input_uosc.conf',
-    'input_contextmenu_plus.conf',
-    'profiles.conf',
-    'script-opts.conf',
-    'script-opts\mpv360.conf',
     'syncplay\mpv_syncplay.py',
     'syncplay\media_provider.py',
     'syncplay\alist_diagnostics.py',
@@ -179,17 +213,71 @@ foreach ($relative in @(
 )) {
     Copy-PackageFile (Join-Path $portableSource $relative) (Join-Path 'portable_config' $relative)
 }
-$uoscBaseline = Join-Path $builderDirectory 'ui-baseline\uosc'
-if (-not (Test-Path -LiteralPath (Join-Path $uoscBaseline 'main.lua') -PathType Leaf)) {
-    throw '缺少 v0.3.0 定制 uosc UI 基线，不能构建房主包。'
+# 完整界面层：键位、输入映射、菜单扩展、脚本与着色器。这些文件与官方
+# 安装包逐一对应，缺一个就会改变菜单、快捷键或画面选项，因此必须原样携带。
+$uiLayerFiles = @(
+    'input_contextmenu_plus.conf',
+    'input_uosc.conf',
+    'profiles.conf',
+    'script-opts.conf',
+    'script-opts\mpv360.conf',
+    'scripts\autoload.lua',
+    'scripts\contextmenu_plus.lua',
+    'scripts\copy-paste-URL.lua',
+    'scripts\input_plus.lua',
+    'scripts\mpv360.lua',
+    'scripts\pressaction.lua',
+    'scripts\save_global_props.lua',
+    'scripts\stats_mediainfo.lua',
+    'scripts\thumbfast.lua',
+    'shaders\Adaptive_sharpen\Adaptive_sharpen_lite_RT.glsl',
+    'shaders\AMD\AMD_FSR_EASU_chroma_RT.glsl',
+    'shaders\AMD\AMD_FSR_EASU_rgb_RT.glsl',
+    'shaders\AMD\AMD_FSR_RCAS_rgb_RT.glsl',
+    'shaders\Ani\Ani4Kv2_ArtCNN_C4F32_i2.glsl',
+    'shaders\Ani\AniSD_ArtCNN_C4F32_i4.glsl',
+    'shaders\Anime4K\Anime4K_AIO_optQ.glsl',
+    'shaders\Anime4K\Anime4K_Denoise_Bilateral_Mode.glsl',
+    'shaders\Anime4K\Anime4K_Restore_CNN_L.glsl',
+    'shaders\Anime4K\Anime4K_Restore_CNN_M.glsl',
+    'shaders\Anime4K\Anime4K_Restore_GAN_UL_R2.glsl',
+    'shaders\Anime4K\Anime4K_Upscale_CNN_x2_M.glsl',
+    'shaders\Anime4K\Anime4K_Upscale_GAN_x2_M.glsl',
+    'shaders\Anime4K_AutoDownscalePre_x2.glsl',
+    'shaders\Anime4K_AutoDownscalePre_x4.glsl',
+    'shaders\Anime4K_Clamp_Highlights.glsl',
+    'shaders\Anime4K_Restore_CNN_M.glsl',
+    'shaders\Anime4K_Restore_CNN_S.glsl',
+    'shaders\Anime4K_Restore_CNN_Soft_M.glsl',
+    'shaders\Anime4K_Restore_CNN_Soft_S.glsl',
+    'shaders\Anime4K_Upscale_CNN_x2_M.glsl',
+    'shaders\Anime4K_Upscale_CNN_x2_S.glsl',
+    'shaders\Anime4K_Upscale_Denoise_CNN_x2_M.glsl',
+    'shaders\CfL\CfL_Prediction_RT.glsl',
+    'shaders\CuNNy\CuNNy_4x16_DS.glsl',
+    'shaders\Deband\hdeband.glsl',
+    'shaders\FSRCNNX\FSRCNNX_x2_16_0_4_1.glsl',
+    'shaders\FSRCNNX\FSRCNNX_x2_8_0_4_1.glsl',
+    'shaders\mpv360.glsl',
+    'shaders\nlmeans\knlm_lite_RT.glsl',
+    'shaders\nnedi3\nnedi3_nns128_win8x4.glsl',
+    'shaders\nnedi3\nnedi3_nns128_win8x6.glsl',
+    'shaders\QCOM\QCOM_SGEDS_ms_RT.glsl'
+)
+foreach ($relative in $uiLayerFiles) {
+    Copy-PackageFile (Join-Path $portableSource $relative) (Join-Path 'portable_config' $relative)
 }
-Get-ChildItem -LiteralPath $uoscBaseline -File -Recurse -Force | ForEach-Object {
-    $relative = Get-RelativePath $uoscBaseline $_.FullName
+
+# uosc 本体。Windows 包与官方安装包一致：只携带 ziggy-windows.exe，
+# 不带 macOS / Linux 版二进制。
+$uoscSource = Join-Path $portableSource 'scripts\uosc'
+Get-ChildItem -LiteralPath $uoscSource -File -Recurse -Force | ForEach-Object {
+    $relative = Get-RelativePath $uoscSource $_.FullName
+    if (@('bin\ziggy-darwin', 'bin\ziggy-linux') -contains $relative) {
+        return
+    }
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc' $relative)
 }
-# 平台二进制不属于界面基线；从已核验的官方产物单独补入。
-Copy-PackageFile (Join-Path $portableSource 'scripts\uosc\bin\ziggy-windows.exe') `
-    'portable_config\scripts\uosc\bin\ziggy-windows.exe'
 
 # 弹幕插件 uosc_danmaku（定制版）：纯本地 OSD 覆盖层，只读取本机 time-pos，
 # 不参与 Syncplay 的播放/暂停/跳转同步，房主与观看者可各自独立开关。
@@ -204,24 +292,11 @@ Get-ChildItem -LiteralPath $danmakuSource -File -Recurse -Force | ForEach-Object
     Copy-PackageFile $_.FullName (Join-Path 'portable_config\scripts\uosc_danmaku' $relative)
 }
 
-# 着色器资源：mpv.conf 里自动加载的 glsl-shaders-append / vf-pre 已按要求注释，
-# 包里不会自动启用任何滤镜；但快捷键 Ctrl+1..9、Ctrl+0、Ctrl+` 与 mpv360
-# 仍按本地配置引用 ~~/shaders/，所以把着色器文件一并带上，保证快捷键行为与
-# 本地完全一致（合计约 3.4 MB）。VapourSynth 脚本（vs/）不随包发布。
-$shaderSource = Join-Path $portableSource 'shaders'
-if (-not (Test-Path -LiteralPath (Join-Path $shaderSource 'mpv360.glsl') -PathType Leaf)) {
-    throw '缺少快捷键所需的着色器目录 portable_config\shaders。'
-}
-Get-ChildItem -LiteralPath $shaderSource -File -Recurse -Force | ForEach-Object {
-    $relative = Get-RelativePath $shaderSource $_.FullName
-    Copy-PackageFile $_.FullName (Join-Path 'portable_config\shaders' $relative)
-}
-
 # 随包 AList：只带程序本体和配置模板，绝不携带本机运行状态（data/、密码、日志）。
-$alistBinary = if ($Arch -eq 'x86') {
-    Join-Path $nativeRoot 'alist\alist.exe'
-} else {
+$alistBinary = if ($Arch -eq 'x64') {
     Join-Path $nativeRoot 'WatchParty\alist\alist.exe'
+} else {
+    Join-Path $nativeRoot 'alist\alist.exe'
 }
 Copy-PackageFile $alistBinary 'WatchParty\alist\alist.exe'
 Copy-PackageFile (Join-Path $projectRoot 'WatchParty\alist\config.template.json') 'WatchParty\alist\config.template.json'
@@ -237,7 +312,7 @@ $tailscaleSource = if ($Arch -eq 'x64') {
 # 取自对应产物目录；SOURCE.txt 按架构生成，记录本包携带的安装包与哈希。
 foreach ($name in @(
     'install-tailscale.bat', 'configure-host.bat', 'configure-viewer.bat',
-    'status.bat', 'README.md'
+    'configure-host-firewall.bat', 'status.bat', 'README.md'
 )) {
     Copy-PackageFile (Join-Path $projectRoot (Join-Path 'WatchParty\Tailscale' $name)) `
         (Join-Path 'WatchParty\Tailscale' $name)
@@ -261,16 +336,20 @@ SHA-256 hash and the Windows Authenticode signer before launching it.
     (Join-Path $stagePath 'WatchParty\Tailscale\SOURCE.txt'),
     $tailscaleProvenance, $utf8)
 
-# 房主入口脚本（首次运行向导 + 日常启动）。
-foreach ($name in @('房主首次运行.bat', '启动.bat')) {
+# 角色中立的入口脚本：首次运行准备 Tailscale，日常启动直接打开 mpv。
+foreach ($name in @('首次运行.bat', '启动.bat')) {
     Copy-PackageFile (Join-Path $projectRoot (Join-Path 'WatchParty' $name)) (Join-Path 'WatchParty' $name)
 }
+
+# 角色中立的说明文档：房主与观看者共用同一份。
+Copy-PackageFile (Join-Path $builderDirectory 'templates\watchparty-使用说明.md') 'WatchParty\使用说明.md'
 
 # 配置模板。
 $templateDirectory = Join-Path $builderDirectory 'templates'
 $utf8 = New-Object Text.UTF8Encoding($false)
 foreach ($templateName in @(
-    'mpv-base.conf', 'host-mpv.conf', 'host-syncplay_ui.conf', 'host-THIRD_PARTY_NOTICES.txt'
+    'mpv-base.conf', 'watchparty-mpv.conf', 'watchparty-syncplay_ui.conf',
+    'watchparty-THIRD_PARTY_NOTICES.txt'
 )) {
     $templatePath = Join-Path $templateDirectory $templateName
     if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
@@ -280,11 +359,11 @@ foreach ($templateName in @(
     $destinationName = $templateName
     if ($templateName -eq 'mpv-base.conf') {
         $destinationName = 'portable_config\mpv-base.conf'
-    } elseif ($templateName -eq 'host-mpv.conf') {
+    } elseif ($templateName -eq 'watchparty-mpv.conf') {
         $destinationName = 'portable_config\mpv.conf'
-    } elseif ($templateName -eq 'host-syncplay_ui.conf') {
+    } elseif ($templateName -eq 'watchparty-syncplay_ui.conf') {
         $destinationName = 'portable_config\script-opts\syncplay_ui.conf'
-    } elseif ($templateName -eq 'host-THIRD_PARTY_NOTICES.txt') {
+    } elseif ($templateName -eq 'watchparty-THIRD_PARTY_NOTICES.txt') {
         $destinationName = 'THIRD_PARTY_NOTICES.txt'
     }
     $destination = Join-Path $stagePath $destinationName
@@ -326,35 +405,18 @@ $requiredFiles = @(
     'WatchParty\alist\config.template.json',
     'WatchParty\media\README.txt',
     $tailscaleRequired,
-    'WatchParty\房主首次运行.bat',
+    'WatchParty\Tailscale\configure-host-firewall.bat',
+    'WatchParty\首次运行.bat',
     'WatchParty\启动.bat',
+    'WatchParty\使用说明.md',
     'portable_config\scripts\syncplay_ui.lua',
-    'portable_config\scripts\uosc\main.lua',
-    'portable_config\scripts\uosc\elements\Logo.lua',
-    'portable_config\scripts\uosc\bin\ziggy-windows.exe',
-    'portable_config\scripts\autoload.lua',
-    'portable_config\scripts\contextmenu_plus.lua',
-    'portable_config\scripts\copy-paste-URL.lua',
-    'portable_config\scripts\input_plus.lua',
-    'portable_config\scripts\mpv360.lua',
-    'portable_config\scripts\pressaction.lua',
-    'portable_config\scripts\save_global_props.lua',
-    'portable_config\scripts\stats_mediainfo.lua',
-    'portable_config\scripts\thumbfast.lua',
-    'portable_config\mpv.conf',
-    'portable_config\mpv-base.conf',
-    'portable_config\input_uosc.conf',
-    'portable_config\input_contextmenu_plus.conf',
-    'portable_config\profiles.conf',
-    'portable_config\script-opts.conf',
-    'portable_config\script-opts\mpv360.conf',
-    'portable_config\shaders\mpv360.glsl',
     'portable_config\syncplay\mpv_syncplay.py',
     'portable_config\syncplay\media_provider.py',
     'portable_config\syncplay\alist_diagnostics.py',
     'portable_config\syncplay\tailscale_integration.py',
     'portable_config\syncplay\watchparty_setup.py',
     'portable_config\script-opts\syncplay_ui.conf',
+    'portable_config\mpv-base.conf',
     'portable_config\scripts\uosc_danmaku\main.lua',
     'portable_config\scripts\uosc_danmaku\apis\dandanplay.lua',
     'portable_config\scripts\uosc_danmaku\modules\options.lua',
@@ -369,15 +431,38 @@ $requiredFiles = @(
     'THIRD_PARTY_LICENSES\uosc_danmaku-MIT.txt',
     'THIRD_PARTY_LICENSES\Tailscale-BSD-3-Clause.txt',
     'THIRD_PARTY_LICENSES\Material-Icons-Apache-2.0.txt',
-    'THIRD_PARTY_LICENSES\AList-AGPL-3.0.txt'
+    'THIRD_PARTY_LICENSES\AList-AGPL-3.0.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-atotto-clipboard-BSD-3-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-pkg-browser-BSD-2-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-golang-x-sys-BSD-3-Clause.txt',
+    'THIRD_PARTY_LICENSES\Ziggy-Go-BSD-3-Clause.txt'
 )
 foreach ($relative in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $stagePath $relative) -PathType Leaf)) {
-        throw "房主包缺少必要文件：$relative"
+        throw "WatchParty 包缺少必要文件：$relative"
     }
 }
 
-# 审计：房主包绝不能携带本机私密状态或运行产物。
+# 界面层必须与官方安装包一一对应，缺少任何一个都会改变菜单或快捷键。
+foreach ($relative in $uiLayerFiles) {
+    $packaged = Join-Path $stagePath (Join-Path 'portable_config' $relative)
+    if (-not (Test-Path -LiteralPath $packaged -PathType Leaf)) {
+        throw "WatchParty 包缺少界面层文件：portable_config\$relative"
+    }
+    $source = Join-Path $portableSource $relative
+    if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $packaged -Algorithm SHA256).Hash) {
+        throw "界面层文件与源文件不一致：portable_config\$relative"
+    }
+}
+if (Test-Path -LiteralPath (Join-Path $stagePath 'portable_config\scripts\uosc\bin\ziggy-darwin')) {
+    throw '审计失败，Windows 包不应携带 ziggy-darwin。'
+}
+if (Test-Path -LiteralPath (Join-Path $stagePath 'portable_config\scripts\uosc\bin\ziggy-linux')) {
+    throw '审计失败，Windows 包不应携带 ziggy-linux。'
+}
+
+# 审计：WatchParty 包绝不能携带本机私密状态或运行产物。
 $forbiddenPatterns = @(
     '(^|/)data(/|$)',
     '(^|/)ADMIN_PASSWORD\.txt$',
@@ -385,7 +470,7 @@ $forbiddenPatterns = @(
     '(?i)^watchparty/media/.+\.(mp4|mkv|avi|flv|ts|webm|mov|m2ts|wmv)$',
     '(^|/)(tailscale|tailscaled|tailscale-ipn)\.exe$',
     '(^|/)wintun\.dll$',
-    '(^|/)(_cache|__pycache__)(/|$)',
+    '(^|/)(_cache|__pycache__|cache)(/|$)',
     '(^|/)(backup|backups|[^/]*备份[^/]*)(/|$)',
     'syncplay_(status|command)\.json$',
     '(saved-props|danmaku-history)\.json$',
@@ -397,22 +482,22 @@ foreach ($file in $packagedFiles) {
     $relative = (Get-RelativePath $stagePath $file.FullName).Replace('\', '/')
     foreach ($pattern in $forbiddenPatterns) {
         if ($relative -match $pattern) {
-            throw "审计失败，房主包含有禁止项：$relative"
+            throw "审计失败，WatchParty 内含禁止项：$relative"
         }
     }
 }
 
-# 审计：房主配置必须是"等待向导改写"的安全初始值。
+# 审计：合并包初始配置必须是「未选择模式、不共享」的安全值。
 $hostConfig = Get-Content -LiteralPath (Join-Path $stagePath 'portable_config\script-opts\syncplay_ui.conf')
 $expectedConfig = @{
     'server' = 'syncplay.pl:8995'
     'name' = ''
-    'alist_enabled' = 'yes'
+    'alist_enabled' = 'no'
     'alist_server' = 'http://127.0.0.1:5244'
     'alist_root' = '~~/../WatchParty/media'
     'alist_virtual_root' = '/media'
     'alist_map' = ''
-    'tailscale_mode' = 'host'
+    'tailscale_mode' = 'off'
     'tailscale_host' = ''
 }
 $actualConfig = @{}
@@ -430,27 +515,21 @@ $mpvConfigText = [IO.File]::ReadAllText(
     (Join-Path $stagePath 'portable_config\mpv.conf'),
     [Text.Encoding]::UTF8
 )
+if ($mpvConfigText -match '(?m)^\s*vf-pre\s*=' -or
+        $mpvConfigText -match '(?m)^\s*glsl-shaders' -or
+        $mpvConfigText -notmatch '(?m)^speed=1\.0\s*$') {
+    throw "审计失败，WatchParty 包 mpv 配置不应携带原机器的滤镜/速度设置。"
+}
+# 共享界面层由 mpv-base.conf 引入；缺了它输入映射、字幕与 OSD 都会退回默认值。
+if ($mpvConfigText -notmatch '(?m)^\s*include\s*=\s*"~~/mpv-base\.conf"\s*$') {
+    throw "审计失败，WatchParty 包 mpv.conf 必须 include 共享基础配置 mpv-base.conf。"
+}
 $mpvBaseText = [IO.File]::ReadAllText(
     (Join-Path $stagePath 'portable_config\mpv-base.conf'),
     [Text.Encoding]::UTF8
 )
-# 覆盖层必须引入共享界面基础配置，否则发布包会退回 mpv 默认界面。
-if ($mpvConfigText -notmatch '(?m)^\s*include\s*=\s*"~~/mpv-base\.conf"\s*$') {
-    throw "审计失败，房主包 mpv.conf 必须 include 共享基础配置 mpv-base.conf。"
-}
-# 本机启用的滤镜(vapoursynth)与 Anime4K 着色器不能随包分发：两者的依赖目录
-# (vs/、shaders/) 体积过大且与 WatchParty 无关。断言覆盖层与基础配置都未启用。
-foreach ($candidate in @(
-    @{ Name = 'mpv.conf'; Text = $mpvConfigText },
-    @{ Name = 'mpv-base.conf'; Text = $mpvBaseText }
-)) {
-    if ($candidate.Text -match '(?m)^\s*vf-pre\s*=' -or
-            $candidate.Text -match '(?m)^\s*glsl-shaders') {
-        throw "审计失败，房主包 $($candidate.Name) 不应启用原机器的滤镜/着色器设置。"
-    }
-}
-if ($mpvConfigText -notmatch '(?m)^speed=1\.0\s*$') {
-    throw "审计失败，房主包 mpv 配置不应携带原机器的速度设置。"
+if ($mpvBaseText -notmatch '(?m)^\s*input-conf\s*=\s*"~~/input_uosc\.conf"\s*$') {
+    throw "审计失败，mpv-base.conf 必须加载 input_uosc.conf 才能保留 uosc 菜单。"
 }
 
 # AList 初始模板只允许携带公开的服务参数，密钥和数据库登录信息必须为空。
@@ -482,7 +561,7 @@ if ([string]$alistTemplate.scheme.address -ne '0.0.0.0' -or
 }
 
 $alistPath = Join-Path $stagePath 'WatchParty\alist\alist.exe'
-$alistHash = (Get-FileHash -LiteralPath $alistPath -Algorithm SHA256).Hash
+$alistHash = Get-FileHashRetry $alistPath
 if ($alistHash -ne $alistSha256) {
     throw "审计失败，AList 二进制 SHA-256 与固定版本（$Arch）不符。"
 }
@@ -526,22 +605,46 @@ connection.execute('select 1').fetchone()
 connection.close()
 print('Embedded Python runtime OK')
 '@
-& $packagedPython -I -B -c $runtimeCheck
-if ($LASTEXITCODE -ne 0) { throw "房主包内 Python 运行时验证失败。" }
-& $packagedPython -X utf8 -I -B (Join-Path $stagePath 'portable_config\syncplay\watchparty_setup.py') --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "房主首次运行模块无法由包内 Python 加载。" }
-& $packagedPython -X utf8 -I -B (Join-Path $stagePath 'portable_config\syncplay\mpv_syncplay.py') --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Syncplay 客户端无法由包内 Python 加载。" }
-& $packagedPython -I -B (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py') --json verify-installer | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "房主包内 Tailscale 安装包验证失败。" }
-$alistVersionText = (& $alistPath version 2>&1) -join "`n"
-if ($LASTEXITCODE -ne 0) { throw "房主包内 AList 启动验证失败。" }
-if ($alistVersionText -notmatch "(?m)^Version:\s+$([regex]::Escape($expectedAlistVersion))\s*$" -or
-        $alistVersionText -notmatch "(?m)^Commit ID:\s+$([regex]::Escape($expectedAlistCommit))") {
-    throw "审计失败，AList 二进制版本或提交与固定版本不符。"
+Invoke-PackagedCommand -FilePath $packagedPython -Arguments @('-I', '-B', '-c', $runtimeCheck) `
+    -FailureMessage "WatchParty 包内 Python 运行时验证失败。" | Out-Null
+Invoke-PackagedCommand -FilePath $packagedPython `
+    -Arguments @('-X', 'utf8', '-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\watchparty_setup.py'), '--help') `
+    -FailureMessage "WatchParty 首次运行模块无法由包内 Python 加载。" | Out-Null
+Invoke-PackagedCommand -FilePath $packagedPython `
+    -Arguments @('-X', 'utf8', '-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\mpv_syncplay.py'), '--help') `
+    -FailureMessage "Syncplay 客户端无法由包内 Python 加载。" | Out-Null
+Invoke-PackagedCommand -FilePath $packagedPython `
+    -Arguments @('-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py'), '--json', 'verify-installer') `
+    -FailureMessage "WatchParty 包内 Tailscale 安装包验证失败。" | Out-Null
+# AList 是刚复制进 stage 的大体积二进制：首次启动偶尔会被杀软/索引器短暂拦住，
+# 出现退出码 0 但输出不完整的情况，所以「调用 + 校验」整体重试，避免偶发构建失败。
+$alistVersionPattern = "(?m)^Version:\s+$([regex]::Escape($expectedAlistVersion))\s*$"
+$alistCommitPattern = "(?m)^Commit ID:\s+$([regex]::Escape($expectedAlistCommit))"
+$alistVersionOk = $false
+$alistVersionText = ''
+$alistVersionError = ''
+for ($attempt = 1; $attempt -le 6; $attempt++) {
+    try {
+        $alistVersionText = Invoke-PackagedCommand -FilePath $alistPath -Arguments @('version') `
+            -FailureMessage "WatchParty 包内 AList 启动验证失败。" -Attempts 1
+    } catch {
+        $alistVersionError = $_.Exception.Message
+        Start-Sleep -Milliseconds 1000
+        continue
+    }
+    if ($alistVersionText -match $alistVersionPattern -and
+            $alistVersionText -match $alistCommitPattern) {
+        $alistVersionOk = $true
+        break
+    }
+    $alistVersionError = "版本输出与固定版本不符"
+    Start-Sleep -Milliseconds 1000
 }
-& (Join-Path $stagePath 'mpv.com') --no-config --version | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "房主包内 mpv 启动验证失败。" }
+if (-not $alistVersionOk) {
+    throw "审计失败，AList 二进制版本或提交与固定版本不符（期望 $expectedAlistVersion/$expectedAlistCommit，$alistVersionError）：$alistVersionText"
+}
+Invoke-PackagedCommand -FilePath (Join-Path $stagePath 'mpv.com') -Arguments @('--no-config', '--version') `
+    -FailureMessage "WatchParty 包内 mpv 启动验证失败。" | Out-Null
 
 # 所有可执行自检之后再审计一次，防止导入模块等操作把缓存或状态写进 ZIP。
 $postCheckFiles = Get-ChildItem -LiteralPath $stagePath -File -Recurse -Force
@@ -549,7 +652,7 @@ foreach ($file in $postCheckFiles) {
     $relative = (Get-RelativePath $stagePath $file.FullName).Replace('\', '/')
     foreach ($pattern in $forbiddenPatterns) {
         if ($relative -match $pattern) {
-            throw "自检后审计失败，房主包含有禁止项：$relative"
+            throw "自检后审计失败，WatchParty 内含禁止项：$relative"
         }
     }
 }
@@ -566,14 +669,14 @@ function Add-SensitiveValue {
     }
 }
 
-$sourceAdminPassword = Join-Path $projectRoot 'WatchParty\ADMIN_PASSWORD.txt'
+$sourceAdminPassword = Join-Path $nativeRoot 'WatchParty\ADMIN_PASSWORD.txt'
 if (Test-Path -LiteralPath $sourceAdminPassword -PathType Leaf) {
     $adminText = [IO.File]::ReadAllText($sourceAdminPassword, [Text.Encoding]::UTF8)
     if ($adminText -match '(?m)^密码[：:]\s*(\S+)\s*$') {
         Add-SensitiveValue 'AList 管理员密码' $matches[1]
     }
 }
-$sourceAlistConfig = Join-Path $projectRoot 'WatchParty\alist\data\config.json'
+$sourceAlistConfig = Join-Path $nativeRoot 'WatchParty\alist\data\config.json'
 if (Test-Path -LiteralPath $sourceAlistConfig -PathType Leaf) {
     try {
         $machineAlist = Get-Content -LiteralPath $sourceAlistConfig -Raw |
@@ -592,7 +695,7 @@ if (Test-Path -LiteralPath $sourceAlistConfig -PathType Leaf) {
         throw "无法审计当前 AList 机器配置：$($_.Exception.Message)"
     }
 }
-$sourceUiConfig = Join-Path $projectRoot 'portable_config\script-opts\syncplay_ui.conf'
+$sourceUiConfig = Join-Path $nativeRoot 'portable_config\script-opts\syncplay_ui.conf'
 if (Test-Path -LiteralPath $sourceUiConfig -PathType Leaf) {
     foreach ($line in Get-Content -LiteralPath $sourceUiConfig) {
         if ($line -match '^\s*(alist_server|alist_map|tailscale_host)\s*=\s*(.+?)\s*$') {
@@ -600,7 +703,7 @@ if (Test-Path -LiteralPath $sourceUiConfig -PathType Leaf) {
         }
     }
 }
-$sourceConnection = Join-Path $projectRoot 'WatchParty\Tailscale\connection.json'
+$sourceConnection = Join-Path $nativeRoot 'WatchParty\Tailscale\connection.json'
 if (Test-Path -LiteralPath $sourceConnection -PathType Leaf) {
     try {
         $machineConnection = Get-Content -LiteralPath $sourceConnection -Raw |
@@ -631,44 +734,55 @@ $manifestLines = Get-ChildItem -LiteralPath $stagePath -File -Recurse -Force |
     Sort-Object FullName |
     ForEach-Object {
         $relative = (Get-RelativePath $stagePath $_.FullName).Replace('\', '/')
-        $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash *$relative"
+        $hashHex = (Get-FileHashRetry $_.FullName).ToLowerInvariant()
+        "$hashHex *$relative"
     }
 [IO.File]::WriteAllLines($manifestPath, [string[]]$manifestLines, $utf8)
 
-# 与观看者包相同的固化时间戳，保证可复现构建。冒烟测试刚运行过的
+# 固定时间戳，保证可复现构建。冒烟测试刚运行过的
 # alist/mpv 可能尚未完全释放句柄，个别文件允许短暂重试。
 $archiveTimestamp = [DateTime]::SpecifyKind(
     [DateTime]::ParseExact('2026-09-08 00:00:00', 'yyyy-MM-dd HH:mm:ss', $null),
     [DateTimeKind]::Utc
 )
 Get-ChildItem -LiteralPath $stagePath -Force -Recurse | ForEach-Object {
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
         try {
             $_.LastWriteTimeUtc = $archiveTimestamp
             break
         } catch [System.IO.IOException] {
-            if ($attempt -eq 5) { throw }
-            Start-Sleep -Milliseconds 500
+            if ($attempt -eq 8) { throw }
+            Start-Sleep -Milliseconds 1000
         }
     }
 }
 (Get-Item -LiteralPath $stagePath).LastWriteTimeUtc = $archiveTimestamp
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::CreateFromDirectory(
-    $stagePath,
-    $zipPath,
-    [IO.Compression.CompressionLevel]::Optimal,
-    $true
-)
-$zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+        if (Test-Path -LiteralPath $zipPath) {
+            Remove-Item -LiteralPath $zipPath -Force
+        }
+        [IO.Compression.ZipFile]::CreateFromDirectory(
+            $stagePath,
+            $zipPath,
+            [IO.Compression.CompressionLevel]::Optimal,
+            $true
+        )
+        break
+    } catch [System.IO.IOException] {
+        if ($attempt -eq 8) { throw }
+        Start-Sleep -Milliseconds 1500
+    }
+}
+$zipHash = (Get-FileHashRetry $zipPath).ToLowerInvariant()
 [IO.File]::WriteAllText($zipPath + '.sha256', "$zipHash *$([IO.Path]::GetFileName($zipPath))`r`n", $utf8)
 
 $size = (Get-Item -LiteralPath $zipPath).Length
 $count = (Get-ChildItem -LiteralPath $stagePath -File -Recurse -Force).Count
 Write-Host ""
-Write-Host "房主包构建并审计完成："
+Write-Host "WatchParty 包构建并审计完成："
 Write-Host "  目录：$stagePath"
 Write-Host "  ZIP ：$zipPath"
 Write-Host "  文件：$count"

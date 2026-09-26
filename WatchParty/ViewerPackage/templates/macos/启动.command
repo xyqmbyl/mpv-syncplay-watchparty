@@ -1,5 +1,7 @@
 #!/bin/bash
-# WatchParty 房主日常启动（macOS）：确保随包 AList 正在运行，然后打开 mpv。
+# WatchParty 日常启动（macOS）：打开 mpv。
+# 房主/观看者共用；角色在面板的「联机 → 运行模式」里选择，随包 AList 只在
+# 房主模式下由面板自动启动，观看者不会占用本机 5244 端口。
 # 打开面板：在 mpv 中按 Ctrl+Shift+S。
 set -u
 cd "$(dirname "$0")"
@@ -14,7 +16,6 @@ unset PYTHONPATH PYTHONHOME 2>/dev/null
 export PYTHONNOUSERSITE=1
 
 PY="./python/bin/python3"
-SETUP="./portable_config/syncplay/watchparty_setup.py"
 MPV="./mpv.app/Contents/MacOS/mpv"
 if [ ! -x "$PY" ]; then
     echo "尚未完成首次设置，正在进入设置向导…"
@@ -36,7 +37,6 @@ if ! "$MPV" --version >/dev/null 2>&1; then
     exit 1
 fi
 
-"$PY" "$SETUP" ensure-alist
 # 界面配置把缓存写进 ~~/_cache/（即 portable_config/_cache/）。发布包不允许携带
 # 缓存目录，因此在这里按需创建，避免 mpv 报错或把缓存落到别处。
 mkdir -p "$PWD/portable_config/_cache/icc" \
@@ -66,4 +66,6 @@ install_bundled_font() {
 install_bundled_font "$PWD/portable_config/fonts/MaterialIconsRound-Regular.otf"
 install_bundled_font "$PWD/portable_config/fonts/uosc_textures.ttf"
 
+# 角色（房主/观看者）由面板的「联机 → 运行模式」决定，这里不做任何联机前置检查：
+# 没选角色时就是纯本地播放器，选好角色后面板会自行启动 AList / Tailscale 会话。
 exec "$MPV" --config-dir="$PWD/portable_config" --idle=yes --force-window=yes

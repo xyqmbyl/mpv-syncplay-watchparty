@@ -1,14 +1,15 @@
 #!/bin/bash
-# 构建 macOS 房主/观看者安装包（Apple Silicon 或 Intel）。
+# 构建 macOS 统一安装包（房主 / 观看者同一个包，Apple Silicon 或 Intel）。
 #
 # 用法：
-#   ./build-macos-package.sh --role host   --arch arm64  [--output-dir DIR]
-#   ./build-macos-package.sh --role viewer --arch intel \
-#       [--tailscale-host 100.x.y.z] [--output-dir DIR]
+#   ./build-macos-package.sh --arch arm64 [--output-dir DIR]
+#   ./build-macos-package.sh --arch intel [--output-dir DIR]
 #
 # 产物：
-#   WatchParty-Host-macOS-AppleSilicon.zip / WatchParty-Host-macOS-Intel.zip
-#   WatchParty-Viewer-macOS-AppleSilicon.zip / WatchParty-Viewer-macOS-Intel.zip
+#   WatchParty-macOS-AppleSilicon.zip / WatchParty-macOS-Intel.zip
+#
+# 包内同时带 AList 与 Tailscale：房主 / 观看者角色在 mpv 联机面板的
+# 「运行模式」里现场选择，构建期不再区分角色、也不写入房主地址。
 #
 # 依赖：macOS 自带 curl/ditto/shasum/codesign、Xcode Command Line Tools，
 # 以及 python3（用于安装应用入口和审计，
@@ -17,31 +18,23 @@
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
-ROLE=""
 ARCH=""
-TAILSCALE_HOST=""
 OUTPUT_DIR=""
 
 usage() {
-    sed -n '2,12p' "$0"
+    sed -n '2,11p' "$0"
     exit 2
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --role) ROLE="${2:-}"; shift 2 ;;
         --arch) ARCH="${2:-}"; shift 2 ;;
-        --tailscale-host) TAILSCALE_HOST="${2:-}"; shift 2 ;;
         --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
         --help|-h) usage ;;
         *) echo "未知参数：$1" >&2; usage ;;
     esac
 done
 
-case "$ROLE" in
-    host|viewer) ;;
-    *) echo "--role 必须是 host 或 viewer" >&2; exit 2 ;;
-esac
 case "$ARCH" in
     arm64|intel) ;;
     *) echo "--arch 必须是 arm64 或 intel" >&2; exit 2 ;;
@@ -104,12 +97,7 @@ else
     ALIST_SHA256="$ALIST_INTEL_SHA256"
     ARCH_LABEL="Intel"
 fi
-PACKAGE_NAME="WatchParty-$ROLE-macOS-$ARCH_LABEL"
-if [ "$ROLE" = "host" ]; then
-    PACKAGE_NAME="WatchParty-Host-macOS-$ARCH_LABEL"
-else
-    PACKAGE_NAME="WatchParty-Viewer-macOS-$ARCH_LABEL"
-fi
+PACKAGE_NAME="WatchParty-macOS-$ARCH_LABEL"
 # tarball 文件名里的 + 需要转义成 %2B。
 PYTHON_URL="$PYTHON_BASE_URL/$(printf '%s' "$PYTHON_TAR" | sed 's/+/%2B/g')"
 MPV_URL="$MPV_BASE_URL/$MPV_NAME"
@@ -118,20 +106,8 @@ ALIST_URL="$ALIST_BASE_URL/$ALIST_TAR"
 if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="$SCRIPT_DIR/output"
 fi
-# 观看者包可带 --tailscale-host 构建预配置包（私发用）；留空则构建"通用包"
-# （Release 发布用），由观看者首次设置时输入房主地址。
-if [ -n "$TAILSCALE_HOST" ]; then
-    TAILSCALE_HOST="$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_address(sys.argv[1]))' "$TAILSCALE_HOST")"
-    case "$TAILSCALE_HOST" in
-        100.*) ;;
-        *) echo "TailscaleHost 必须是 100.64.0.0/10 内的地址。" >&2; exit 2 ;;
-    esac
-fi
-if [ -n "$TAILSCALE_HOST" ]; then
-    ALIST_ORIGIN="http://$TAILSCALE_HOST:5244"
-else
-    ALIST_ORIGIN=""
-fi
+# 房主地址不再在构建期写入：统一包按「运行模式」在面板里现场配置，
+# 因此这里不再接受 --tailscale-host，也不预置 ALIST_ORIGIN。
 
 STAGE="$OUTPUT_DIR/$PACKAGE_NAME"
 ZIP_PATH="$OUTPUT_DIR/$PACKAGE_NAME.zip"
@@ -200,13 +176,11 @@ cp -R "$WORK/py/python" "$STAGE/python"
 # 它们都不是 macOS 运行时所需文件，不纳入发布包。
 find "$STAGE/python" -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '*.bat' -o -name 'test_*.py' \) -delete
 find "$STAGE/python" -type d -name __pycache__ -empty -delete
-if [ "$ROLE" = "host" ]; then
-    mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media"
-    cp "$ALIST_BIN" "$STAGE/WatchParty/alist/alist"
-    cp "$REPO_ROOT/WatchParty/alist/config.template.json" \
-        "$STAGE/WatchParty/alist/config.template.json"
-    cp "$REPO_ROOT/WatchParty/media/README.txt" "$STAGE/WatchParty/media/README.txt"
-fi
+mkdir -p "$STAGE/WatchParty/alist" "$STAGE/WatchParty/media"
+cp "$ALIST_BIN" "$STAGE/WatchParty/alist/alist"
+cp "$REPO_ROOT/WatchParty/alist/config.template.json" \
+    "$STAGE/WatchParty/alist/config.template.json"
+cp "$REPO_ROOT/WatchParty/media/README.txt" "$STAGE/WatchParty/media/README.txt"
 cp "$CACHE_DIR/$TAILSCALE_PKG_NAME" \
     "$STAGE/WatchParty/Tailscale/$TAILSCALE_PKG_NAME"
 cat > "$STAGE/WatchParty/Tailscale/SOURCE.txt" <<EOF
@@ -303,15 +277,12 @@ done
 cp "$COMMON_TEMPLATE_DIR/mpv-base.conf" "$STAGE/portable_config/mpv-base.conf"
 cp "$TEMPLATE_DIR/mpv.conf" "$STAGE/portable_config/mpv.conf"
 cp "$TEMPLATE_DIR/uosc_danmaku.conf" "$STAGE/portable_config/script-opts/uosc_danmaku.conf"
-if [ "$ROLE" = "host" ]; then
-    cp "$TEMPLATE_DIR/syncplay_ui.conf" \
-        "$STAGE/portable_config/script-opts/syncplay_ui.conf"
-else
-    sed -e "s|__ALIST_ORIGIN__|$ALIST_ORIGIN|g" \
-        -e "s|__TAILSCALE_HOST__|$TAILSCALE_HOST|g" \
-        "$TEMPLATE_DIR/syncplay_ui-viewer.conf" \
-        > "$STAGE/portable_config/script-opts/syncplay_ui.conf"
+if [ ! -f "$TEMPLATE_DIR/watchparty-syncplay_ui.conf" ]; then
+    echo "缺少角色无关模板 templates/macos/watchparty-syncplay_ui.conf" >&2
+    exit 1
 fi
+cp "$TEMPLATE_DIR/watchparty-syncplay_ui.conf" \
+    "$STAGE/portable_config/script-opts/syncplay_ui.conf"
 cp "$CACHE_DIR/MaterialIconsRound-Regular.otf" \
     "$STAGE/portable_config/fonts/MaterialIconsRound-Regular.otf"
 cp "$CACHE_DIR/LXGWWenKaiMonoLite-Regular.ttf" \
@@ -320,24 +291,19 @@ cp "$CACHE_DIR/uosc_textures.ttf" "$STAGE/portable_config/fonts/uosc_textures.tt
 mkdir -p "$STAGE/THIRD_PARTY_LICENSES"
 cp "$SCRIPT_DIR/templates/licenses/"*.txt "$STAGE/THIRD_PARTY_LICENSES/"
 
-# 说明文档与入口脚本（.command 需要可执行位）。
-if [ "$ROLE" = "host" ]; then
-    for name in 首次设置.command 启动.command 房主使用说明.md; do
-        cp "$TEMPLATE_DIR/$name" "$STAGE/$name"
-    done
-else
-    for name in 观看者首次设置.command 启动观看.command 观看者使用说明.md; do
-        cp "$TEMPLATE_DIR/$name" "$STAGE/$name"
-    done
-    sed -e "s|__ALIST_ORIGIN__|$ALIST_ORIGIN|g" \
-        -e "s|__TAILSCALE_HOST__|$TAILSCALE_HOST|g" \
-        -i "" "$STAGE/观看者首次设置.command" "$STAGE/启动观看.command"
-fi
+# 说明文档与入口脚本（.command 需要可执行位）。统一包只有一套入口：
+# 首次设置.command 完成依赖检查，启动.command 拉起 mpv，
+# 角色在「联机 → 运行模式」里选择。
+for name in 首次设置.command 启动.command 使用说明.md; do
+    if [ ! -f "$TEMPLATE_DIR/$name" ]; then
+        echo "缺少统一包模板 templates/macos/$name" >&2
+        exit 1
+    fi
+    cp "$TEMPLATE_DIR/$name" "$STAGE/$name"
+done
 
 chmod +x "$STAGE"/*.command "$ZIGGY_SRC"
-if [ "$ROLE" = "host" ]; then
-    chmod +x "$STAGE/WatchParty/alist/alist"
-fi
+chmod +x "$STAGE/WatchParty/alist/alist"
 
 # 可执行文件签名：保持官方原签名；缺失或失效时补 ad-hoc 瘦签名，避免
 # Gatekeeper 把解压出来的二进制直接当作"已损坏"拒绝运行。
@@ -346,7 +312,7 @@ for bin in "$ZIGGY_SRC"; do
         codesign --force --sign - "$bin" >/dev/null 2>&1 || true
     fi
 done
-if [ "$ROLE" = "host" ] && ! codesign --verify "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1; then
+if ! codesign --verify "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1; then
     codesign --force --sign - "$STAGE/WatchParty/alist/alist" >/dev/null 2>&1 || true
 fi
 
@@ -361,13 +327,13 @@ sed -e "s/__ZIGGY_SHA256__/$ZIGGY_SHA256/" \
     "$TEMPLATE_DIR/THIRD_PARTY_NOTICES.txt" > "$STAGE/THIRD_PARTY_NOTICES.txt"
 
 # 5. 审计：禁止项（机器状态、凭据、媒体、缓存、测试文件、Windows 专用文件）。
-ROLE="$ROLE" "$STAGE/python/bin/python3" - "$STAGE" <<'PY'
+# 统一包始终带 alist/media 与 Tailscale，因此不再按角色放行 alist 目录。
+"$STAGE/python/bin/python3" - "$STAGE" <<'PY'
 import os
 import re
 import sys
 
 stage = sys.argv[1]
-role = os.environ["ROLE"]
 forbidden = [
     r"(^|/)data(/|$)",
     r"(^|/)ADMIN_PASSWORD\.txt$",
@@ -382,8 +348,6 @@ forbidden = [
     r"(?i)\.(pyc|pyo|log|bak|tmp|db|db-shm|db-wal|engine)$",
     r"\.bat$",
 ]
-if role == "viewer":
-    forbidden.append(r"(^|/)(alist|media)(/|$)")
 count = 0
 for root, dirs, files in os.walk(stage):
     dirs.sort()
@@ -427,11 +391,12 @@ if not os.path.isfile(stage + "/portable_config/shaders/mpv360.glsl"):
 print("mpv 配置审计通过")
 PY
 
-# 6. 配置审计：host 是"等待向导改写"的安全初始值；viewer 已写入房主地址。
-"$STAGE/python/bin/python3" - "$STAGE" "$ROLE" "$ALIST_ORIGIN" "$TAILSCALE_HOST" <<'PY'
+# 6. 配置审计：统一包出厂必须是"角色未选择"的安全初始值，由面板的
+# 「运行模式」在运行时改写；构建期不得预置房主地址或角色。
+"$STAGE/python/bin/python3" - "$STAGE" <<'PY'
 import sys
 
-stage, role, alist_origin, tailscale_host = sys.argv[1:5]
+stage = sys.argv[1]
 conf = {}
 path = stage + "/portable_config/script-opts/syncplay_ui.conf"
 with open(path, encoding="utf-8") as handle:
@@ -440,42 +405,28 @@ with open(path, encoding="utf-8") as handle:
             key, value = line.split("=", 1)
             conf[key.strip()] = value.strip()
 
-if role == "host":
-    expected = {
-        "server": "syncplay.pl:8995",
-        "alist_enabled": "yes",
-        "alist_server": "http://127.0.0.1:5244",
-        "alist_root": "~~/../WatchParty/media",
-        "alist_virtual_root": "/media",
-        "alist_map": "",
-        "tailscale_mode": "host",
-        "tailscale_host": "",
-    }
-else:
-    expected_prefix = alist_origin
-    checks = {
-        "alist_enabled": "yes",
-        "alist_server": expected_prefix,
-        "tailscale_mode": "viewer",
-        "tailscale_host": tailscale_host,
-    }
-    if conf.get("alist_root"):
-        raise SystemExit("审计失败，观看者配置不应携带 alist_root。")
-    if conf.get("alist_map"):
-        raise SystemExit("审计失败，观看者配置不应携带 alist_map。")
-    for key, value in checks.items():
-        if conf.get(key) != value:
-            raise SystemExit("审计失败，观看者配置 %s 不符合预期。" % key)
-    print("观看者配置审计通过")
-    raise SystemExit(0)
+expected = {
+    "server": "syncplay.pl:8995",
+    "auto_start": "no",
+    "alist_enabled": "no",
+    "alist_server": "http://127.0.0.1:5244",
+    "alist_root": "~~/../WatchParty/media",
+    "alist_virtual_root": "/media",
+    "alist_map": "",
+    "tailscale_mode": "off",
+    "tailscale_host": "",
+}
 for key, value in expected.items():
     if conf.get(key) != value:
-        raise SystemExit("审计失败，房主配置 %s 不符合预期。" % key)
-print("房主配置审计通过")
+        raise SystemExit(
+            "审计失败，统一包 syncplay_ui.conf 的 %s 不是角色无关初始值。" % key
+        )
+if not conf.get("pipe"):
+    raise SystemExit("审计失败，统一包 syncplay_ui.conf 缺少 mpv IPC 路径。")
+print("统一包配置审计通过（角色未选择、AList 默认关闭）")
 PY
 
-# AList 配置模板审计：房主包不得携带密钥或数据库配置。
-if [ "$ROLE" = "host" ]; then
+# AList 配置模板审计：任何角色都不携带密钥或数据库配置。
 python3 - "$STAGE/WatchParty/alist/config.template.json" <<'PY'
 import json
 import sys
@@ -493,7 +444,6 @@ scheme = config["scheme"]
 assert scheme["address"] == "0.0.0.0" and int(scheme["http_port"]) == 5244
 print("AList 模板审计通过")
 PY
-fi
 
 # 7. 运行时自检：包内 python、AList、mpv 都要能启动；Tailscale 安装包哈希核对。
 cd "$STAGE"
@@ -501,21 +451,18 @@ cd "$STAGE"
 "$STAGE/python/bin/python3" -B portable_config/syncplay/watchparty_setup.py --help >/dev/null
 "$STAGE/python/bin/python3" -B portable_config/syncplay/mpv_syncplay.py --help >/dev/null
 "$STAGE/python/bin/python3" -B portable_config/syncplay/tailscale_integration.py verify-installer >/dev/null
-if [ "$ROLE" = "host" ]; then
-    "$STAGE/WatchParty/alist/alist" version | grep -F "v$ALIST_VERSION"
-fi
+"$STAGE/WatchParty/alist/alist" version | grep -F "v$ALIST_VERSION"
 "./mpv.app/Contents/MacOS/mpv" --no-config --version >/dev/null
 "./mpv.app/Contents/MacOS/watchparty-launcher" --no-config --version >/dev/null
 cd - >/dev/null
 
 # 自检后再次审计，防止运行时缓存混入 ZIP。
-"$STAGE/python/bin/python3" - "$STAGE" "$ROLE" <<'PY'
+"$STAGE/python/bin/python3" - "$STAGE" <<'PY'
 import os
 import re
 import sys
 
 stage = sys.argv[1]
-role = sys.argv[2]
 forbidden = [
     r"(^|/)data(/|$)",
     r"(^|/)ADMIN_PASSWORD\.txt$",
@@ -530,8 +477,6 @@ forbidden = [
     r"(?i)\.(pyc|pyo|log|bak|tmp|db|db-shm|db-wal|engine)$",
     r"\.bat$",
 ]
-if role == "viewer":
-    forbidden.append(r"(^|/)(alist|media)(/|$)")
 for root, dirs, files in os.walk(stage):
     for name in files:
         rel = os.path.relpath(os.path.join(root, name), stage).replace(os.sep, "/")
@@ -556,7 +501,7 @@ ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
 printf '%s *%s\n' "$ZIP_SHA256" "$PACKAGE_NAME.zip" > "$ZIP_PATH.sha256"
 
 echo ""
-echo "$ROLE macOS ($ARCH_LABEL) 包构建并审计完成："
+echo "统一包 macOS ($ARCH_LABEL) 构建并审计完成（房主 / 观看者同一包）："
 echo "  目录：$STAGE"
 echo "  ZIP ：$ZIP_PATH"
 echo "  文件：$(find "$STAGE" -type f | wc -l | tr -d ' ')"

@@ -1,8 +1,9 @@
-MPV Syncplay Host - Third-party notices
+WatchParty (MPV Syncplay host / viewer) - Third-party notices
 =======================================
 
 This package contains redistributable binaries and assets from third-party
-projects. The corresponding license texts are in THIRD_PARTY_LICENSES.
+projects. The same package runs as the host (bundled AList) or as the
+viewer. The corresponding license texts are in THIRD_PARTY_LICENSES.
 
 mpv
   Version: v0.40.0-489-g95c7599c4
@@ -81,7 +82,7 @@ Microsoft Visual C++ runtime files
   executables. They remain subject to Microsoft's applicable redistributable
   terms and are not covered by this project's license.
 
-The host package includes a clean AList executable and configuration template.
+The package includes a clean AList executable and configuration template that host mode uses.
 It does not include an AList database, administrator credential, media file,
 machine-specific path, playback history, Tailscale login credential, CUDA,
 TensorRT, or VapourSynth installation.

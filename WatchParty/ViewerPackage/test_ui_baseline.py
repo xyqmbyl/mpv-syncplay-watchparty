@@ -1,7 +1,9 @@
 """Guard the v0.3.0 player UI against accidental upstream uosc replacement.
 
 Run ``python WatchParty/ViewerPackage/test_ui_baseline.py`` to check sources, or
-pass ``--package PATH`` to also inspect an extracted Host/Viewer package.
+pass ``--package PATH`` to also inspect an extracted WatchParty package.
+The merged package replaces the old Host/Viewer split, so every template is
+checked for the neutral "no role chosen yet" state.
 This test uses only the Python standard library and does not start mpv.
 """
 
@@ -21,9 +23,10 @@ BASELINE_DIR = BUILDER_DIR / "ui-baseline" / "uosc"
 PORTABLE_DIR = REPO_ROOT / "portable_config"
 TEMPLATE_DIR = BUILDER_DIR / "templates"
 
-# SHA-256 of every non-binary uosc entry in the published v0.3.0 Host ZIP.
-# Its Viewer ZIP contains byte-for-byte identical uosc files. Ziggy is added
-# separately by each platform builder and intentionally is not pinned here.
+# SHA-256 of every non-binary uosc entry shipped by v0.3.0. The merged package
+# keeps these files byte-for-byte; only the role split around them was removed.
+# Ziggy is added separately by each platform builder and intentionally is not
+# pinned here.
 V03_UOSC = {
     "char-conv/zh-hans.json": "6d2ebcaf98e9a9fc565d1d7e05929d944ead8ce829db59b6c46b180c5db2d21b",
     "char-conv/zh.json": "0ee5c7a215907410b3cd4a50ef5ff18958c47325b8bed4607ccb27ed035ab9d8",
@@ -93,6 +96,42 @@ REMOVED_MENU_GROUPS = ("VF 滤镜", "着色器")
 # or the shipped UI silently falls back to mpv defaults.
 MPV_BASE_INCLUDE = 'include = "~~/mpv-base.conf"'
 
+# One merged package serves both roles: the user picks 房主模式 / 观看者模式 at
+# runtime from the panel (Ctrl+Shift+S -> 联机 -> 运行模式), which then rewrites
+# these values in memory. Every template must therefore ship the safe, neutral
+# state and must never pin a host address or enable sharing on its own.
+NEUTRAL_SYNCPLAY_VALUES = {
+    "server": "syncplay.pl:8995",
+    "auto_start": "no",
+    "alist_enabled": "no",
+    "alist_server": "http://127.0.0.1:5244",
+    "alist_root": "~~/../WatchParty/media",
+    "alist_virtual_root": "/media",
+    "alist_map": "",
+    "tailscale_mode": "off",
+    "tailscale_host": "",
+}
+
+# The mpv overlay of each platform, and the template the Windows builder renders
+# into portable_config/script-opts/syncplay_ui.conf.
+TEMPLATE_OVERLAYS = ("watchparty-mpv.conf", "macos/mpv.conf")
+TEMPLATE_SYNCPLAY_CONFIGS = (
+    "watchparty-syncplay_ui.conf",
+    "macos/watchparty-syncplay_ui.conf",
+)
+
+# Templates that belonged to the removed Host/Viewer split. Their reappearance
+# means a role-specific package crept back into a single-package build.
+REMOVED_ROLE_TEMPLATES = (
+    "host-mpv.conf", "mpv.conf",
+    "host-syncplay_ui.conf", "syncplay_ui.conf",
+    "host-THIRD_PARTY_NOTICES.txt", "THIRD_PARTY_NOTICES.txt",
+    "启动观看.bat", "观看者使用说明.md", "观看者首次运行.bat",
+    "macos/syncplay_ui.conf", "macos/syncplay_ui-viewer.conf",
+    "macos/启动观看.command", "macos/观看者首次设置.command",
+    "macos/房主使用说明.md", "macos/观看者使用说明.md",
+)
+
 # Every ~~/shaders/... path these shipped files mention must exist in the
 # package. mpv resolves the path literally against the config directory and has
 # no fallback search, so a missing file means a visibly broken hotkey.
@@ -108,6 +147,7 @@ SHADER_REFERENCE = re.compile(r"~~/shaders/([^\"';]+)")
 # back from the script so these checks follow the builder instead of restating
 # its layout here.
 MACOS_BUILDER = BUILDER_DIR / "build-macos-package.sh"
+WINDOWS_BUILDER = BUILDER_DIR / "build-watchparty-package.ps1"
 BUILDER_DIR_VARIABLE = re.compile(r'^([A-Z_]+)="\$SCRIPT_DIR/([^"]+)"\s*$', re.MULTILINE)
 BUILDER_PATH_REFERENCE = re.compile(r'\$([A-Z_]+)/([^"\s]+)')
 BUILDER_LOOP = re.compile(r"for ([A-Za-z_]+) in (.+?); do(.*?)\bdone\b", re.DOTALL)
@@ -237,28 +277,61 @@ class UiBaselineTests(unittest.TestCase):
             '"uosc", "close-menu"',
             'id = "syncplay.overview"', 'id = "syncplay.playback"',
             'id = "syncplay.members"', 'id = "syncplay.tailscale"',
+            # The merged package picks its role here instead of at build time.
+            "运行模式", "房主模式", "观看者模式", "tailscale_mode",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, script)
 
+    def check_neutral_syncplay_config(self, path):
+        """A shipped syncplay_ui.conf must not prefer either role."""
+        values = parse_conf(path)
+        for key, expected in NEUTRAL_SYNCPLAY_VALUES.items():
+            with self.subTest(config=path.name, key=key):
+                self.assertEqual(values.get(key), expected, f"{path.name}: {key}")
+        # mpv's IPC socket is how the panel reaches the running player; an empty
+        # value silently disables every runtime mode switch.
+        self.assertTrue(values.get("pipe"), f"{path.name}: pipe must not be empty")
+
     def test_templates_keep_custom_ui(self):
-        for name in ("host-mpv.conf", "mpv.conf", "macos/mpv.conf"):
+        for name in TEMPLATE_OVERLAYS:
             with self.subTest(template=name):
                 values = parse_conf(TEMPLATE_DIR / name)
                 self.assertEqual(values.get("osc"), "no")
                 self.assertEqual(values.get("force-window"), "yes")
                 self.assertIn("input-ipc-server", values)
-        for name, role in (
-            ("host-syncplay_ui.conf", "host"),
-            ("syncplay_ui.conf", "viewer"),
-            ("macos/syncplay_ui.conf", "host"),
-            ("macos/syncplay_ui-viewer.conf", "viewer"),
-        ):
+        for name in TEMPLATE_SYNCPLAY_CONFIGS:
             with self.subTest(template=name):
-                values = parse_conf(TEMPLATE_DIR / name)
-                self.assertEqual(values.get("tailscale_mode"), role)
-                self.assertEqual(values.get("auto_start"), "no")
-                self.assertEqual(values.get("alist_virtual_root"), "/media")
+                self.check_neutral_syncplay_config(TEMPLATE_DIR / name)
+
+    def test_role_specific_templates_are_gone(self):
+        leftovers = [
+            name for name in REMOVED_ROLE_TEMPLATES if (TEMPLATE_DIR / name).exists()
+        ]
+        self.assertEqual(leftovers, [], "role-split templates must not come back")
+        for name in ("watchparty-mpv.conf", "watchparty-syncplay_ui.conf"):
+            with self.subTest(template=name):
+                self.assertTrue(
+                    (TEMPLATE_DIR / name).is_file(),
+                    f"merged template is missing: {name}",
+                )
+
+    def test_windows_builder_builds_one_merged_package(self):
+        """The Windows builder must render the neutral config for both arches."""
+        text = WINDOWS_BUILDER.read_text(encoding="utf-8", errors="replace")
+        for marker in (
+            "'watchparty-mpv.conf'", "'watchparty-syncplay_ui.conf'",
+            "'watchparty-THIRD_PARTY_NOTICES.txt'", "'mpv-base.conf'",
+            "portable_config\\mpv.conf", "script-opts\\syncplay_ui.conf",
+            "$NativeRoot",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, text)
+        self.assertIn("'x64', 'x86'", text, "the builder must keep both x86 and x64")
+        self.assertIn("WatchParty-Windows-$Arch", text)
+        for name in ("首次运行.bat", "启动.bat"):
+            with self.subTest(entry=name):
+                self.assertTrue((REPO_ROOT / "WatchParty" / name).is_file())
 
     def test_macos_uses_bundled_chinese_font(self):
         values = parse_conf(TEMPLATE_DIR / "macos" / "mpv.conf")
@@ -321,7 +394,7 @@ class UiBaselineTests(unittest.TestCase):
         self.assertEqual(base.get("input-conf"), '"~~/input_uosc.conf"')
         self.assertEqual(base.get("osc"), "no")
         self.assertEqual(base.get("sub-scale"), "1")
-        for name in ("host-mpv.conf", "mpv.conf", "macos/mpv.conf"):
+        for name in TEMPLATE_OVERLAYS:
             with self.subTest(template=name):
                 text = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
                 self.assertIn(MPV_BASE_INCLUDE, text)
@@ -456,6 +529,9 @@ class UiBaselineTests(unittest.TestCase):
             with self.subTest(font=name):
                 self.assertEqual(sha256(portable / "fonts" / name), expected)
         self.assertEqual(parse_conf(portable / "mpv.conf").get("osc"), "no")
+        # A freshly extracted package must not share anything until the user
+        # picks a mode, so the packaged config has to stay neutral.
+        self.check_neutral_syncplay_config(portable / "script-opts" / "syncplay_ui.conf")
         if (root / "mpv.app").is_dir():
             self.assertEqual(
                 sha256(portable / "fonts/LXGWWenKaiMonoLite-Regular.ttf"),
@@ -474,7 +550,7 @@ class UiBaselineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--package", help="Extracted Host/Viewer package directory")
+    parser.add_argument("--package", help="Extracted WatchParty package directory")
     args, unittest_args = parser.parse_known_args()
     if args.package:
         os.environ["WATCHPARTY_UI_PACKAGE"] = args.package

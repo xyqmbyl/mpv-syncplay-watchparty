@@ -41,5 +41,6 @@ if errorlevel 1 (
 if exist "%PROJECT_ROOT%\python.exe" (
     "%PROJECT_ROOT%\python.exe" "%PROJECT_ROOT%\portable_config\syncplay\tailscale_integration.py" open >nul 2>&1
 )
-echo [Tailscale] 安装完成。请在托盘图标中登录，然后运行 configure-host.bat 或 configure-viewer.bat。
+echo [Tailscale] 安装完成。请在托盘图标中登录；然后回到 mpv 面板的
+echo [Tailscale] 「联机 -^> 运行模式」选择房主模式或观看者模式。
 pause

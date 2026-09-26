@@ -61,12 +61,12 @@ Tailscale
 
 AList
   Version: v3.64.0, commit 3e49fa4630e668beb76a81e8dd8d55db80b37a69
-  Binary: WatchParty/alist/alist (host package only)
+  Binary: WatchParty/alist/alist (used by host mode)
   Release: https://github.com/AlistGo/alist/releases/tag/v3.64.0
   Source: https://github.com/AlistGo/alist/tree/3e49fa4630e668beb76a81e8dd8d55db80b37a69
   License: GNU Affero General Public License Version 3
 
-The host package includes a clean AList executable and configuration template.
-It does not include an AList database, administrator credential, media file,
-machine-specific path, playback history, or Tailscale login credential. The
-viewer package does not include an AList binary at all.
+The same package runs as the host (bundled AList) or as the viewer. It includes
+a clean AList executable and configuration template. It does not include an AList
+database, administrator credential, media file, machine-specific path, playback
+history, or Tailscale login credential.
