@@ -1,15 +1,16 @@
 name: 构建发布安装包
 
-# 推送 v* 标签时构建 6 个发布包：Windows x86 房主/观看者、macOS Apple Silicon
-# 与 Intel 各房主/观看者。Windows x64 两个包携带开发机签名的 64 位运行时，
-# 仍由开发机构建后上传到同一个 Release。
+# 推送 v* 标签时构建合并包：Windows x86、macOS Apple Silicon 与 Intel 各一个包。
+# 房主（host）与观看者（viewer）共用同一个包，运行模式在 mpv 内通过
+# Ctrl+Shift+S -> 联机 -> 运行模式 选择，因此不再需要按角色分别构建。
+# Windows x64 合并包携带开发机签名的 64 位运行时，仍由开发机构建后上传到同一个 Release。
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       platforms:
-        description: 构建平台（macos 用于修复现有 macOS 发布包）
+        description: 构建平台（macos 用于只重建两个 macOS 合并包）
         type: choice
         options: [all, macos]
         default: all
@@ -20,24 +21,20 @@ permissions:
 jobs:
   windows-x86:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platforms != 'macos' }}
-    name: Windows x86（房主 + 观看者）
+    name: Windows x86（合并包）
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: 拉取并核对 x86 官方产物
         shell: pwsh
         run: ./WatchParty/ViewerPackage/fetch-artifacts.ps1
-      - name: 构建房主包（x86）
+      - name: 构建合并包（x86，房主与观看者同一包）
         shell: pwsh
-        run: ./WatchParty/ViewerPackage/build-host-package.ps1 -Arch x86
-      - name: 构建观看者包（x86 通用包）
-        shell: pwsh
-        run: ./WatchParty/ViewerPackage/build-viewer-package.ps1 -Arch x86
-      - name: 核对 v0.3.0 UI（x86 房主与观看者）
+        run: ./WatchParty/ViewerPackage/build-watchparty-package.ps1 -Arch x86
+      - name: 核对 v0.3.0 UI（x86 合并包）
         shell: pwsh
         run: |
-          python WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Host-Windows-x86
-          python WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Viewer-Windows-x86
+          python WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Windows-x86
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x86
@@ -62,17 +59,13 @@ jobs:
         run: |
           python3 -B WatchParty/ViewerPackage/test_macos_launcher.py
           python3 -B WatchParty/ViewerPackage/test_ui_baseline.py
-      - name: 构建房主包
+      - name: 构建合并包（房主与观看者同一包）
         run: |
           chmod +x WatchParty/ViewerPackage/build-macos-package.sh
-          WatchParty/ViewerPackage/build-macos-package.sh --role host --arch ${{ matrix.arch }}
-      - name: 构建观看者包（通用包）
+          WatchParty/ViewerPackage/build-macos-package.sh --arch ${{ matrix.arch }}
+      - name: 核对 v0.3.0 UI（合并包）
         run: |
-          WatchParty/ViewerPackage/build-macos-package.sh --role viewer --arch ${{ matrix.arch }}
-      - name: 核对 v0.3.0 UI（房主与观看者）
-        run: |
-          python3 WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Host-macOS-${{ matrix.label }}
-          python3 WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-Viewer-macOS-${{ matrix.label }}
+          python3 WatchParty/ViewerPackage/test_ui_baseline.py --package WatchParty/ViewerPackage/output/WatchParty-macOS-${{ matrix.label }}
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.label }}

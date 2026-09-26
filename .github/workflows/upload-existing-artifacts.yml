@@ -1,6 +1,8 @@
 name: 将成功构建的包补传到现有 Release
 
-# 只搬运既有构建产物；不会创建标签或 Release，也不会覆盖已有附件。
+# 只搬运既有构建产物（Windows x86、macOS Apple Silicon 与 Intel 三个合并包；
+# 房主与观看者共用同一个包，包名不再按角色拆分）；不会创建标签或 Release，
+# 也不会覆盖已有附件。
 on:
   workflow_dispatch:
     inputs:
@@ -51,9 +53,9 @@ jobs:
 
           existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           for name in \
-            WatchParty-Host-Windows-x86.zip WatchParty-Viewer-Windows-x86.zip \
-            WatchParty-Host-macOS-AppleSilicon.zip WatchParty-Viewer-macOS-AppleSilicon.zip \
-            WatchParty-Host-macOS-Intel.zip WatchParty-Viewer-macOS-Intel.zip; do
+            WatchParty-Windows-x86.zip \
+            WatchParty-macOS-AppleSilicon.zip \
+            WatchParty-macOS-Intel.zip; do
             for asset in "$name" "$name.sha256"; do
               if grep -Fxq -- "$asset" <<< "$existing"; then
                 echo "Release 已有附件，拒绝覆盖：$asset" >&2
@@ -62,7 +64,7 @@ jobs:
             done
           done
 
-      - name: 下载 Windows x86 产物
+      - name: 下载 Windows x86 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: windows-x86
@@ -70,7 +72,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/windows-x86
 
-      - name: 下载 macOS Apple Silicon 产物
+      - name: 下载 macOS Apple Silicon 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: macos-AppleSilicon
@@ -78,7 +80,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/macos-AppleSilicon
 
-      - name: 下载 macOS Intel 产物
+      - name: 下载 macOS Intel 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: macos-Intel
@@ -86,17 +88,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/macos-Intel
 
-      - name: 严格核对 6 个 ZIP 与 SHA-256，再上传
+      - name: 严格核对 3 个 ZIP 与 SHA-256，再上传
         shell: bash
         run: |
           set -euo pipefail
           archives=(
-            artifacts/windows-x86/WatchParty-Host-Windows-x86.zip
-            artifacts/windows-x86/WatchParty-Viewer-Windows-x86.zip
-            artifacts/macos-AppleSilicon/WatchParty-Host-macOS-AppleSilicon.zip
-            artifacts/macos-AppleSilicon/WatchParty-Viewer-macOS-AppleSilicon.zip
-            artifacts/macos-Intel/WatchParty-Host-macOS-Intel.zip
-            artifacts/macos-Intel/WatchParty-Viewer-macOS-Intel.zip
+            artifacts/windows-x86/WatchParty-Windows-x86.zip
+            artifacts/macos-AppleSilicon/WatchParty-macOS-AppleSilicon.zip
+            artifacts/macos-Intel/WatchParty-macOS-Intel.zip
           )
           files=()
           for archive in "${archives[@]}"; do

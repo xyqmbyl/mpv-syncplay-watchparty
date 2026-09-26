@@ -1,9 +1,11 @@
-name: 发布 6 个官方安装包附件
+name: 发布官方安装包附件
 
-# 从一次成功的 release.yml 构建运行中取出 6 个官方安装包（Windows x86 房主/观看者、
-# macOS Apple Silicon 与 Intel 各房主/观看者），校验 SHA-256 后以正式名称覆盖
-# Release 上的同名附件（Windows x64 两个包仍由开发机构建后上传）。
-# 本工作流只处理下列 12 个确定的附件名称，不修改 Release 说明，也不触碰其他附件。
+# 从一次成功的 release.yml 构建运行中取出 3 个官方合并包（Windows x86、
+# macOS Apple Silicon 与 Intel），校验 SHA-256 后以正式名称覆盖 Release 上的同名附件。
+# 房主与观看者共用同一个包，因此不再有按角色拆分的包名。
+# Windows x64 合并包由开发机构建后上传，不经过本工作流的 Actions 产物。
+# 本工作流只处理下列 6 个确定的附件名称（3 个 ZIP + 3 个 .sha256），
+# 不修改 Release 说明，也不触碰其他附件。
 on:
   workflow_dispatch:
     inputs:
@@ -53,7 +55,7 @@ jobs:
           jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag' <<< "$release" >/dev/null
           echo "RELEASE_ID=$(jq -r '.id' <<< "$release")" >> "$GITHUB_ENV"
 
-      - name: 下载 Apple Silicon 产物
+      - name: 下载 Apple Silicon 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: macos-AppleSilicon
@@ -61,7 +63,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/AppleSilicon
 
-      - name: 下载 Intel 产物
+      - name: 下载 Intel 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: macos-Intel
@@ -69,7 +71,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/Intel
 
-      - name: 下载 Windows x86 产物
+      - name: 下载 Windows x86 合并包产物
         uses: actions/download-artifact@v4
         with:
           name: windows-x86
@@ -77,40 +79,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts/Windows-x86
 
-      - name: 严格校验六个 ZIP、六个校验文件和十二条附件名称
+      - name: 严格校验三个 ZIP、三个校验文件和六个附件名称
         shell: bash
         run: |
           set -euo pipefail
           expected=()
-          for arch in AppleSilicon Intel; do
-            for role in Host Viewer; do
-              archive="artifacts/$arch/WatchParty-$role-macOS-$arch.zip"
-              sidecar="$archive.sha256"
-              [[ -f "$archive" && -f "$sidecar" ]] || { echo "缺少附件：$archive" >&2; exit 1; }
-              digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
-              checksum_line=$(cat "$sidecar")
-              checksum_line=${checksum_line%$'\r'}
-              [[ "$checksum_line" == "$digest *${archive##*/}" ]] || { echo "SHA-256 不匹配：$archive" >&2; exit 1; }
-              # 覆盖正式附件前先确认 ZIP 自身完整且索引可读。
-              unzip -tq "$archive" >/dev/null || { echo "ZIP 结构损坏：$archive" >&2; exit 1; }
-              expected+=("$archive" "$sidecar")
-            done
-          done
-          for role in Host Viewer; do
-            archive="artifacts/Windows-x86/WatchParty-$role-Windows-x86.zip"
+          for archive in \
+            artifacts/AppleSilicon/WatchParty-macOS-AppleSilicon.zip \
+            artifacts/Intel/WatchParty-macOS-Intel.zip \
+            artifacts/Windows-x86/WatchParty-Windows-x86.zip; do
             sidecar="$archive.sha256"
             [[ -f "$archive" && -f "$sidecar" ]] || { echo "缺少附件：$archive" >&2; exit 1; }
             digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
             checksum_line=$(cat "$sidecar")
             checksum_line=${checksum_line%$'\r'}
             [[ "$checksum_line" == "$digest *${archive##*/}" ]] || { echo "SHA-256 不匹配：$archive" >&2; exit 1; }
+            # 覆盖正式附件前先确认 ZIP 自身完整且索引可读。
             unzip -tq "$archive" >/dev/null || { echo "ZIP 结构损坏：$archive" >&2; exit 1; }
             expected+=("$archive" "$sidecar")
           done
-          [[ ${#expected[@]} -eq 12 ]] || { echo '附件数量必须为 12' >&2; exit 1; }
+          [[ ${#expected[@]} -eq 6 ]] || { echo '附件数量必须为 6' >&2; exit 1; }
           diff -u <(printf '%s\n' "${expected[@]}" | sort) <(find artifacts -type f | sort)
           printf '%s\n' "${expected[@]}" > "$RUNNER_TEMP/publish-files.txt"
-          echo '十二个候选附件均通过 SHA-256 与 ZIP 结构校验。'
+          echo '六个候选附件均通过 SHA-256 与 ZIP 结构校验。'
 
       - name: 以正式名称覆盖上传并核对 GitHub SHA-256
         shell: bash
@@ -162,4 +153,4 @@ jobs:
             echo "GitHub digest 校验通过：$asset_name"
           done < "$RUNNER_TEMP/publish-files.txt"
 
-          echo '六个官方安装包及其校验文件均已就绪；Release 说明和其他附件未修改。'
+          echo '三个官方合并包及其校验文件均已就绪；Release 说明和其他附件未修改。'
