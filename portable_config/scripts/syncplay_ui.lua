@@ -543,7 +543,12 @@ local function run_action(action)
     elseif action == "mode-host" then
         activate_host_mode()
     elseif action == "mode-viewer" then
-        configure_tailscale_viewer(trim(options.tailscale_host))
+        if current_mode() == "host" then
+            -- 房主模式下 tailscale_host 保存的是本机地址，直接复用会指向自己。
+            notify("请在「运行模式」顶部输入框填入对方的 100.x.x.x 后回车")
+        else
+            configure_tailscale_viewer(trim(options.tailscale_host))
+        end
     elseif action == "mode-local" then
         activate_local_mode()
     elseif action == "close" then
@@ -1040,7 +1045,10 @@ local function build_items()
             icon = select(2, mode_label()),
             search_style = "palette",
             search_debounce = "submit",
-            search_suggestion = tostring(options.tailscale_host or ""),
+            -- 观看者模式下预填房主地址方便修改；其余模式（尤其房主）预填的
+            -- 是本机地址，回车会指向自己，必须留空让用户填对方的 100.x.x.x。
+            search_suggestion = current_mode() == "viewer"
+                and tostring(options.tailscale_host or "") or "",
             on_search = {"script-message-to", script_name, "syncplay-mode-submit"},
             items = build_mode_items(),
         },

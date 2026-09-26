@@ -456,12 +456,13 @@ def run_alist_admin(arguments, timeout=30.0):
 
 
 def clear_macos_quarantine():
-    """清掉随包 AList 的 macOS 隔离标记（best-effort）。
+    """清掉整个安装包的 macOS 隔离标记（best-effort）。
 
     浏览器下载的 ZIP 解压后所有文件都带 com.apple.quarantine，未公证的
-    alist 会被 Gatekeeper 直接杀掉，表现为"启动失败：45 秒内未就绪"。
-    首次设置.command / 启动.command 的入口已递归清除过；这里兜底覆盖
-    用户直接双击 mpv.app、没经过 .command 的场景。
+    alist、ziggy（uosc 菜单/输入依赖的辅助程序）等都会被 Gatekeeper 直接
+    杀掉，表现为"AList 启动失败"或"面板/输入打不开"。首次设置.command /
+    启动.command 的入口已递归清除过；这里兜底覆盖用户直接双击 mpv.app、
+    没经过 .command 的场景，所以按整个包根目录递归清理。
     """
     if IS_WINDOWS or not os.path.isfile(ALIST_EXE):
         return
@@ -470,11 +471,11 @@ def clear_macos_quarantine():
         return
     try:
         subprocess.run(
-            [xattr, "-r", "-d", "com.apple.quarantine", ALIST_DIR],
+            [xattr, "-r", "-d", "com.apple.quarantine", PROJECT_ROOT],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=30)
+            check=False, timeout=120)
     except (OSError, subprocess.SubprocessError) as exc:
-        log("提示：清除 AList 隔离标记失败（%s），若启动失败请手动执行 "
+        log("提示：清除隔离标记失败（%s），若面板或 AList 异常请手动执行 "
             "xattr -cr <包目录>。" % exc)
 
 
@@ -494,7 +495,7 @@ def ensure_alist():
         raise SetupError(
             "端口 %d 已被其他程序占用（不是随包 AList）。\n"
             "请关闭占用该端口的程序，或修改 WatchParty%salist%sdata%sconfig.json "
-            "中的 http_port 后重试。" % ((ALIST_PORT,) + (os.sep,) * 4))
+            "中的 http_port 后重试。" % ((ALIST_PORT,) + (os.sep,) * 3))
 
     fresh_install = not os.path.isfile(ALIST_CONFIG)
     if fresh_install:
@@ -589,7 +590,7 @@ class AlistAdmin:
             raise SetupError(
                 "AList 管理员登录失败（%s）。\n"
                 "请核对 WatchParty%sADMIN_PASSWORD.txt 中的密码是否与当前 "
-                "AList 数据目录匹配。" % ((body.get("message"),) + (os.sep,) * 2))
+                "AList 数据目录匹配。" % (body.get("message"), os.sep))
         return body["data"]["token"]
 
     # ---- 存储与设置 ----

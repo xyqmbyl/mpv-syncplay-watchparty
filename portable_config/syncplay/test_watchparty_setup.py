@@ -129,6 +129,104 @@ class AlistAdminContractTests(unittest.TestCase):
         ])
 
 
+class FailureMessageFormatTests(unittest.TestCase):
+    """失败分支抛出的文案必须能构造成功。
+
+    回归：这几处曾把 % 占位符与参数个数写错，SetupError 还没抛出来，
+    构造文案就先抛 TypeError，面板只能看到格式化错误，看不到真实原因。
+    """
+
+    def test_missing_alist_message_builds(self):
+        saved = _patch(
+            setup,
+            ALIST_EXE=os.path.join(tempfile.gettempdir(), "no-such-alist-bin"),
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as caught:
+                setup.ensure_alist()
+        finally:
+            _patch(setup, **saved)
+        self.assertIn("没有找到随包的 AList", str(caught.exception))
+
+    def test_port_occupied_message_builds(self):
+        saved = _patch(
+            setup,
+            ALIST_EXE=__file__,
+            probe_port=lambda host, port: True,
+            alist_ping=lambda url: False,
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as caught:
+                setup.ensure_alist()
+        finally:
+            _patch(setup, **saved)
+        self.assertIn("端口 5244 已被其他程序占用", str(caught.exception))
+        self.assertIn("http_port", str(caught.exception))
+
+    def test_admin_login_failure_message_builds(self):
+        admin = setup.AlistAdmin.__new__(setup.AlistAdmin)
+        admin.base = "http://127.0.0.1:5244"
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = json.dumps(payload).encode("utf-8")
+
+            def read(self, size):
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        saved = _patch(
+            setup,
+            urllib=types.SimpleNamespace(request=types.SimpleNamespace(
+                Request=lambda *args, **kwargs: None,
+                ProxyHandler=lambda handler: None,
+                build_opener=lambda *args, **kwargs: types.SimpleNamespace(
+                    open=lambda request, timeout=10: FakeResponse(
+                        {"code": 401, "message": "wrong password"})),
+            )),
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as caught:
+                admin._login("bad-password")
+        finally:
+            _patch(setup, **saved)
+        self.assertIn("AList 管理员登录失败（wrong password）", str(caught.exception))
+        self.assertIn("ADMIN_PASSWORD.txt", str(caught.exception))
+
+    def test_alist_startup_timeout_message_builds(self):
+        class FakeProcess:
+            def poll(self):
+                return 1
+
+        saved = _patch(
+            setup,
+            ALIST_EXE=__file__,
+            ALIST_CONFIG=os.path.join(tempfile.gettempdir(), "no-such-config.json"),
+            probe_port=lambda host, port: False,
+            render_alist_config=lambda: None,
+            ensure_admin_password=lambda: "WP-test",
+            clear_macos_quarantine=lambda: None,
+            start_alist_process=lambda: FakeProcess(),
+            wait_for_alist=lambda: False,
+            stop_alist_process=lambda process: None,
+            _read_server_output_tail=lambda limit=400: "最近输出：alist fake tail",
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as caught:
+                setup.ensure_alist()
+        finally:
+            _patch(setup, **saved)
+        message = str(caught.exception)
+        self.assertIn("AList 启动失败", message)
+        self.assertIn("退出码 1", message)
+        self.assertIn("alist fake tail", message)
+
+
 class MediaStorageDecisionTests(unittest.TestCase):
     class FakeAdmin:
         def __init__(self, storages):
