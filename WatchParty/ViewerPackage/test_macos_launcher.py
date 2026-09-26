@@ -8,8 +8,12 @@ from pathlib import Path
 import platform
 import plistlib
 import subprocess
+import sys
 import tempfile
 import unittest
+
+# Embedded Python's ._pth isolation omits the script directory from sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from install_macos_launcher import LAUNCHER_NAME, install_launcher
 
