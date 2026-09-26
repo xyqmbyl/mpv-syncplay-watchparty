@@ -270,8 +270,8 @@ local function write_command(command, fields)
     return true
 end
 
-local function notify(text)
-    mp.osd_message("Syncplay: " .. text, 2.5)
+local function notify(text, seconds)
+    mp.osd_message("Syncplay: " .. text, seconds or 2.5)
 end
 
 local function close_menu()
@@ -397,20 +397,25 @@ local function role_change_notice(headline)
         write_command("stop")
         message = message .. " 媒体地址已保存，请重新运行启动脚本后再加入房间。"
     end
-    notify(message)
+    notify(message, 8)
 end
 
 local function activate_host_mode()
-    notify("正在配置房主模式；如出现“用户账户控制”提示请选择“是”…")
-    run_setup_helper({"mode-host"}, function(ok, payload, detail)
+    -- 配置包含一次管理员授权（首次）加 AList/Tailscale 检查，通常几秒，
+    -- 等待 UAC 时可能更久。提示必须留够时间，否则用户会以为"点了没反应"。
+    notify("正在配置房主模式…如出现“用户账户控制”请点“是”", 12)
+    local started = run_setup_helper({"mode-host"}, function(ok, payload, detail)
         if not ok then
             tailscale_state.error = detail
-            notify(detail)
+            notify(detail, 12)
             return
         end
         apply_tailscale_payload(payload)
         role_change_notice("房主模式已切换。请在 Tailscale 后台对本设备点 Share。")
     end)
+    if not started then
+        notify("正在配置其它网络项目，请稍候再点一次「切换为房主模式」", 6)
+    end
 end
 
 local function activate_local_mode()
@@ -496,6 +501,14 @@ local function install_tailscale()
             end
         end)
     end)
+end
+
+-- 合并安装包在首次运行前不预设角色：tailscale_mode=off 表示"还没选"。
+-- 必须声明在 run_action 之前：run_action 的「切换为观看者模式」分支要读它，
+-- 而 Lua 的 local 只在声明语句之后可见，放在后面会变成调用一个不存在的
+-- 全局函数，点击后只会抛 "attempt to call global 'current_mode'"。
+local function current_mode()
+    return trim(options.tailscale_mode):lower()
 end
 
 local function run_action(action)
@@ -895,11 +908,7 @@ local function build_member_items()
     return items
 end
 
--- 合并安装包在首次运行前不预设角色：tailscale_mode=off 表示"还没选"。
-local function current_mode()
-    return trim(options.tailscale_mode):lower()
-end
-
+-- current_mode 已在上文 run_action 之前声明，这里不再重复定义。
 local function mode_label()
     local mode = current_mode()
     if mode == "host" then return "房主", "home_work" end
@@ -969,7 +978,8 @@ local function build_mode_items()
             icon = "home_work", selectable = false, muted = true}
     else
         items[#items + 1] = {title = "切换为房主模式",
-            hint = "发布本机 WatchParty\\media 并共享给观看者",
+            hint = tailscale_busy and "正在配置网络，请稍候再点"
+                or "发布本机 WatchParty\\media 并共享给观看者",
             icon = "home_work", value = action_value("mode-host")}
     end
     if mode == "viewer" then

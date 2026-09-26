@@ -766,7 +766,11 @@ class DoctorRoleTests(unittest.TestCase):
 
 
 class HostFirewallTests(unittest.TestCase):
-    """房主防火墙步骤：必须只提权 netsh，并且失败时给出可操作提示。"""
+    """房主防火墙步骤：必须只提权 netsh，并且失败时给出可操作提示。
+
+    默认把 firewall_rule_present 固定为"规则不存在"：否则测试会去读真实
+    系统的 netsh 结果，在有规则的机器上跳过提权，结果依赖运行环境。
+    """
 
     def _patch_firewall(self, **overrides):
         defaults = dict(
@@ -774,6 +778,7 @@ class HostFirewallTests(unittest.TestCase):
             ALIST_EXE=os.path.join("C:", "fake", "alist.exe"),
             HOST_FIREWALL_SCRIPT=os.path.join("C:", "fake", "configure-host-firewall.bat"),
             is_admin=lambda: False,
+            firewall_rule_present=lambda: False,
             elevate_and_wait=lambda target, parameters=None, timeout=900.0: 0,
             _run_hidden=lambda arguments, timeout=900.0: 0,
         )
@@ -867,6 +872,95 @@ class HostFirewallTests(unittest.TestCase):
         finally:
             _patch(setup, **saved)
         self.assertIn("退出码 1", str(context.exception))
+
+    def test_existing_rule_is_reused_without_prompting_again(self):
+        """规则已存在时必须直接复用：每次点房主模式都弹 UAC 会表现为"没反应"。"""
+        prompted = []
+        saved = self._patch_firewall(
+            firewall_rule_present=lambda: True,
+            elevate_and_wait=lambda *args, **kwargs: prompted.append(args) or 0,
+            _run_hidden=lambda *args, **kwargs: prompted.append(args) or 0,
+        )
+        try:
+            result = setup.configure_host_firewall()
+        finally:
+            _patch(setup, **saved)
+        self.assertEqual(prompted, [], "规则已存在时不应再提权或重跑 netsh")
+        self.assertTrue(result["configured"])
+        self.assertTrue(result["reused"])
+        self.assertFalse(result["elevated"])
+
+
+class FirewallRuleProbeTests(unittest.TestCase):
+    """规则存在性检查只看与语言无关的端口/网段 token。"""
+
+    class FakeCompleted:
+        def __init__(self, returncode, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def _probe(self, completed):
+        calls = []
+
+        def fake_run(arguments, **kwargs):
+            calls.append(arguments)
+            return completed
+
+        saved = _patch(
+            setup,
+            IS_WINDOWS=True,
+            subprocess=types.SimpleNamespace(
+                run=fake_run,
+                PIPE=subprocess.PIPE,
+                DEVNULL=subprocess.DEVNULL,
+                SubprocessError=subprocess.SubprocessError,
+                CREATE_NO_WINDOW=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ),
+        )
+        try:
+            return setup.firewall_rule_present(), calls
+        finally:
+            _patch(setup, **saved)
+
+    def test_matching_rule_is_detected(self):
+        found, calls = self._probe(self.FakeCompleted(
+            0, "Rule Name: MPV Syncplay WatchParty AList\n"
+               "LocalPort: 5244\nRemoteIP: 100.64.0.0/10\n"))
+        self.assertTrue(found)
+        self.assertIn("name=%s" % setup.FIREWALL_RULE_NAME, " ".join(calls[0]))
+
+    def test_missing_rule_is_not_detected(self):
+        found, _ = self._probe(self.FakeCompleted(1, "No rules match the specified criteria.\n"))
+        self.assertFalse(found)
+
+    def test_rule_with_wrong_network_is_not_reused(self):
+        """网段不对（例如被改成 Any）时必须重新写入，不能当成已配置。"""
+        found, _ = self._probe(self.FakeCompleted(0, "LocalPort: 5244\nRemoteIP: Any\n"))
+        self.assertFalse(found)
+
+    def test_localized_output_still_matches_ascii_tokens(self):
+        found, _ = self._probe(self.FakeCompleted(
+            0, "规则名称: MPV Syncplay WatchParty AList\n本地端口: 5244\n远程 IP: 100.64.0.0/10\n"))
+        self.assertTrue(found)
+
+    def test_netsh_error_is_treated_as_absent(self):
+        def boom(arguments, **kwargs):
+            raise OSError("netsh missing")
+
+        saved = _patch(
+            setup, IS_WINDOWS=True,
+            subprocess=types.SimpleNamespace(
+                run=boom,
+                PIPE=subprocess.PIPE,
+                DEVNULL=subprocess.DEVNULL,
+                SubprocessError=subprocess.SubprocessError,
+                CREATE_NO_WINDOW=0,
+            ),
+        )
+        try:
+            self.assertFalse(setup.firewall_rule_present())
+        finally:
+            _patch(setup, **saved)
 
 
 class ModeHostTests(unittest.TestCase):

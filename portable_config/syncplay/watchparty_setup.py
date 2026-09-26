@@ -189,6 +189,39 @@ def _run_hidden(arguments, timeout=900.0):
     return completed.returncode
 
 
+def firewall_rule_present():
+    """只读检查房主放行规则是否已存在且内容正确（不需要管理员权限）。
+
+    ``netsh`` 的字段名会跟随系统语言本地化，所以这里只比对与语言无关的
+    端口、来源网段（GBK/UTF-8 都与 ASCII 兼容，中文输出不会影响匹配）。
+    规则已存在时无需再次弹出 UAC——否则用户每次点「切换为房主模式」都要
+    授权一次，漏点或点"否"就表现为"点了没反应"。
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                "netsh", "advfirewall", "firewall", "show", "rule",
+                "name=%s" % FIREWALL_RULE_NAME, "verbose",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    output = completed.stdout or ""
+    return "5244" in output and "100.64.0.0/10" in output
+
+
 def configure_host_firewall():
     """放行 100.64.0.0/10 访问随包 AList 的 5244 端口。
 
@@ -204,6 +237,15 @@ def configure_host_firewall():
     if not os.path.isfile(HOST_FIREWALL_SCRIPT):
         raise SetupError(
             "找不到 %s，无法配置防火墙规则。" % ui_path("WatchParty/Tailscale/configure-host-firewall.bat"))
+
+    if firewall_rule_present():
+        log("防火墙规则已存在且匹配（仅 Tailscale 网段可访问 5244），跳过授权。")
+        return {
+            "configured": True,
+            "rule": FIREWALL_RULE_NAME,
+            "reused": True,
+            "elevated": False,
+        }
 
     if is_admin():
         log("已经具备管理员权限，直接写入防火墙规则。")
