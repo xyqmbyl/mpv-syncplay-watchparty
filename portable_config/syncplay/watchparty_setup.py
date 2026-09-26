@@ -143,8 +143,10 @@ def elevate_and_wait(target, parameters=None, timeout=900.0):
             ("hProcess", wintypes.HANDLE),
         ]
 
-    shell32 = ctypes.windll.shell32
-    kernel32 = ctypes.windll.kernel32
+    # use_last_error=True：ctypes 内部调用可能覆盖线程错误码，
+    # 必须用 ctypes.get_last_error() 读取 ShellExecuteExW 保存的错误。
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
 
@@ -157,7 +159,7 @@ def elevate_and_wait(target, parameters=None, timeout=900.0):
     info.lpDirectory = os.path.dirname(target) or None
     info.nShow = sw_hide
     if not shell32.ShellExecuteExW(ctypes.byref(info)):
-        error = kernel32.GetLastError()
+        error = ctypes.get_last_error()
         if error == error_cancelled:
             return ELEVATION_CANCELLED
         raise SetupError("无法启动管理员进程（Windows 错误码 %s）。" % error)
