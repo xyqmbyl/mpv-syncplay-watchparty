@@ -963,6 +963,229 @@ class FirewallRuleProbeTests(unittest.TestCase):
             _patch(setup, **saved)
 
 
+class PortOwnerProbeTests(unittest.TestCase):
+    """5244 的占用者解析必须与 netstat 的语言无关。"""
+
+    class FakeCompleted:
+        def __init__(self, stdout="", returncode=0):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def _owner(self, completed):
+        saved = _patch(
+            setup,
+            IS_WINDOWS=True,
+            subprocess=types.SimpleNamespace(
+                run=lambda arguments, **kwargs: completed,
+                PIPE=subprocess.PIPE,
+                DEVNULL=subprocess.DEVNULL,
+                STDOUT=subprocess.STDOUT,
+                SubprocessError=subprocess.SubprocessError,
+                CREATE_NO_WINDOW=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ),
+        )
+        try:
+            return setup._pid_listening_on(setup.ALIST_PORT)
+        finally:
+            _patch(setup, **saved)
+
+    def test_english_listener_is_parsed(self):
+        self.assertEqual(
+            self._owner(self.FakeCompleted(
+                "  Proto  Local Address          Foreign Address        State           PID\n"
+                "  TCP    0.0.0.0:5244           0.0.0.0:0              LISTENING       22040\n")),
+            22040)
+
+    def test_localized_headers_do_not_break_parsing(self):
+        self.assertEqual(
+            self._owner(self.FakeCompleted(
+                "协议  本地地址          外部地址        状态           PID\n"
+                "  TCP    0.0.0.0:5244           0.0.0.0:0              侦听           22040\n")),
+            22040)
+
+    def test_established_connection_is_not_a_listener(self):
+        """外部地址非 :0 的连接行不能当作端口占用者。"""
+        self.assertIsNone(self._owner(self.FakeCompleted(
+            "  TCP    127.0.0.1:5244         127.0.0.1:61234        ESTABLISHED     1234\n")))
+
+    def test_other_ports_are_ignored(self):
+        self.assertIsNone(self._owner(self.FakeCompleted(
+            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       9\n")))
+
+    def test_netstat_failure_is_tolerated(self):
+        def boom(arguments, **kwargs):
+            raise OSError("netstat missing")
+
+        saved = _patch(
+            setup, IS_WINDOWS=True,
+            subprocess=types.SimpleNamespace(
+                run=boom, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+                STDOUT=subprocess.STDOUT,
+                SubprocessError=subprocess.SubprocessError,
+                CREATE_NO_WINDOW=0),
+        )
+        try:
+            self.assertIsNone(setup._pid_listening_on(setup.ALIST_PORT))
+        finally:
+            _patch(setup, **saved)
+
+
+class AlistPathTests(unittest.TestCase):
+    """只有"另一个 WatchParty 副本"的 AList 才允许被自动接管。"""
+
+    def test_packaged_layout_is_recognized(self):
+        self.assertTrue(setup._is_watchparty_alist_path(
+            os.path.join("E:" + os.sep, "WatchParty-Windows-x64", "WatchParty",
+                         "alist", "alist.exe")))
+
+    def test_other_alist_install_is_not_recognized(self):
+        self.assertFalse(setup._is_watchparty_alist_path(
+            os.path.join("C:" + os.sep, "Tools", "alist", "alist.exe")))
+
+
+class ForeignAlistTakeoverTests(unittest.TestCase):
+    """5244 被另一个副本占住时必须改用自己的 AList（登录失败根因）。"""
+
+    FOREIGN = os.path.join("E:" + os.sep, "WatchParty-Windows-x64", "WatchParty",
+                           "alist", "alist.exe")
+    OTHER = os.path.join("C:" + os.sep, "Tools", "alist", "alist.exe")
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+    def _ensure(self, listener, same=False, stop_result=True):
+        calls = {"stopped": []}
+
+        def fake_stop(pid):
+            calls["stopped"].append(pid)
+            return stop_result
+
+        saved = _patch(
+            setup,
+            ALIST_EXE=__file__,
+            ALIST_DIR=tempfile.gettempdir(),
+            ALIST_CONFIG=os.path.join(tempfile.gettempdir(), "no-such-wp-config.json"),
+            probe_port=lambda host, port: True,
+            alist_ping=lambda url: True,
+            alist_listener=lambda port=None: listener,
+            _same_executable=lambda path: same,
+            stop_alist_pid=fake_stop,
+            ensure_admin_password=lambda: "WP-test",
+            clear_macos_quarantine=lambda: None,
+            start_alist_process=lambda: self.FakeProcess(),
+            wait_for_alist=lambda: True,
+        )
+        try:
+            return setup.ensure_alist(), calls
+        finally:
+            _patch(setup, **saved)
+
+    def test_foreign_copy_is_stopped_and_replaced(self):
+        result, calls = self._ensure((22040, self.FOREIGN))
+        self.assertEqual(result, ("http://127.0.0.1:5244", True))
+        self.assertEqual(calls["stopped"], [22040])
+
+    def test_own_instance_is_reused_without_killing(self):
+        result, calls = self._ensure((1234, setup.ALIST_EXE), same=True)
+        self.assertEqual(result, ("http://127.0.0.1:5244", False))
+        self.assertEqual(calls["stopped"], [])
+
+    def test_unknown_owner_is_never_killed(self):
+        """查不到占用者进程时保守复用，绝不误杀。"""
+        result, calls = self._ensure(None)
+        self.assertEqual(result, ("http://127.0.0.1:5244", False))
+        self.assertEqual(calls["stopped"], [])
+
+    def test_other_alist_install_is_reported_not_killed(self):
+        with self.assertRaises(setup.SetupError) as caught:
+            self._ensure((7, self.OTHER))
+        self.assertIn("不是本包的 AList", str(caught.exception))
+
+    def test_failed_kill_gives_actionable_error(self):
+        with self.assertRaises(setup.SetupError) as caught:
+            self._ensure((22040, self.FOREIGN), stop_result=False)
+        self.assertIn("无法停止另一个 WatchParty 副本的 AList", str(caught.exception))
+
+
+class AdminPasswordSelfHealTests(unittest.TestCase):
+    """密码文件与数据目录不一致时，向导应自动重设一次再登录。"""
+
+    class FakeAdmin:
+        def __init__(self, outcome="ok"):
+            self.outcome = outcome
+
+        def list_settings(self):
+            return []
+
+        def enable_guest(self):
+            return False
+
+        def ensure_media_storage(self, media_dir):
+            return self.outcome
+
+    def _configure(self, admin_factory, reset_result):
+        calls = {"admin_set": []}
+
+        def fake_run(arguments, timeout=30.0):
+            calls["admin_set"].append(list(arguments))
+            return reset_result
+
+        saved = _patch(
+            setup,
+            ensure_admin_password=lambda: "WP-test",
+            AlistAdmin=admin_factory,
+            run_alist_admin=fake_run,
+            MEDIA_DIR=tempfile.gettempdir(),
+        )
+        try:
+            return setup.configure_alist(), calls
+        finally:
+            _patch(setup, **saved)
+
+    def test_login_failure_is_healed_by_resetting_password(self):
+        attempts = []
+
+        def factory(base_url, password):
+            attempts.append(password)
+            if len(attempts) == 1:
+                raise setup.SetupError("AList 管理员登录失败（wrong password）。")
+            return self.FakeAdmin("created")
+
+        class Ok:
+            returncode = 0
+            stdout = ""
+
+        admin, calls = self._configure(factory, Ok())
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(calls["admin_set"], [["admin", "set", "WP-test"]])
+        self.assertIsInstance(admin, self.FakeAdmin)
+
+    def test_reset_failure_is_reported(self):
+        def factory(base_url, password):
+            raise setup.SetupError("AList 管理员登录失败（wrong password）。")
+
+        class Failed:
+            returncode = 1
+            stdout = "level=fatal msg=permission denied"
+
+        with self.assertRaises(setup.SetupError) as caught:
+            self._configure(factory, Failed())
+        self.assertIn("无法重新设置 AList 管理员密码", str(caught.exception))
+
+    def test_persistent_failure_points_at_the_other_copy(self):
+        def factory(base_url, password):
+            raise setup.SetupError("AList 管理员登录失败（wrong password）。")
+
+        class Ok:
+            returncode = 0
+            stdout = ""
+
+        with self.assertRaises(setup.SetupError) as caught:
+            self._configure(factory, Ok())
+        self.assertIn("另一个 WatchParty 副本", str(caught.exception))
+
+
 class ModeHostTests(unittest.TestCase):
     """mode-host 是面板一键切换房主模式的入口，必须返回稳定的 JSON 字典。"""
 

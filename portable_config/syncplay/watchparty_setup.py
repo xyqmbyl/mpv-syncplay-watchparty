@@ -347,6 +347,129 @@ def probe_port(host, port, timeout=2.0):
         return False
 
 
+def _pid_listening_on(port):
+    """返回独占监听本机 TCP 端口的进程号；拿不到时返回 None。
+
+    只按"本地地址以 :端口 结尾"且"外部地址以 :0 结尾"匹配，不依赖状态列
+    文案（中文/英文系统的 netstat 表头与状态列都可能被本地化）。
+    """
+    if not IS_WINDOWS:
+        return None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=20, creationflags=flags, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    suffix = ":%d" % port
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        if not parts[1].endswith(suffix) or not parts[2].endswith(":0"):
+            continue
+        if parts[-1].isdigit():
+            return int(parts[-1])
+    return None
+
+
+def _process_image_path(pid):
+    """返回进程的可执行文件全路径；进程已退出或权限不足时为 None。"""
+    if not IS_WINDOWS or not pid:
+        return None
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):
+        return None
+    try:
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel.QueryFullProcessImageNameW.restype = ctypes.c_int
+        kernel.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_uint32)]
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return None
+        try:
+            size = ctypes.c_uint32(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel.QueryFullProcessImageNameW(
+                    handle, 0, buffer, ctypes.byref(size)):
+                return None
+            return buffer.value or None
+        finally:
+            kernel.CloseHandle(handle)
+    except (AttributeError, OSError):
+        return None
+
+
+def _is_watchparty_alist_path(path):
+    """路径是否形如 <任意目录>\\WatchParty\\alist\\alist.exe。"""
+    if not path:
+        return False
+    if os.path.basename(path).lower() not in ("alist.exe", "alist"):
+        return False
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    return os.path.basename(parent).lower() == "watchparty"
+
+
+def _same_executable(path):
+    """路径是否就是本目录的 AList（兼容 8.3 短名、subst、目录联接）。"""
+    try:
+        return os.path.samefile(ALIST_EXE, path)
+    except OSError:
+        pass
+    try:
+        return os.path.normcase(os.path.realpath(path)) == \
+            os.path.normcase(os.path.realpath(ALIST_EXE))
+    except OSError:
+        return False
+
+
+def alist_listener(port=None):
+    """5244 的监听者若是 AList 进程，返回 (pid, 可执行文件全路径)。
+
+    返回 None 表示端口没有被 AList 占用（可能是别的程序，也可能查不到）。
+    """
+    pid = _pid_listening_on(ALIST_PORT if port is None else port)
+    if pid is None:
+        return None
+    path = _process_image_path(pid)
+    if not path:
+        return None
+    if os.path.basename(path).lower() not in ("alist.exe", "alist"):
+        return None
+    return pid, path
+
+
+def stop_alist_pid(pid):
+    """强制停止指定进程并等它放开 5244；成功返回 True。"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(int(pid)), "/F"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30, creationflags=flags, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("警告：无法停止进程 %s（%s）。" % (pid, exc))
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if not probe_port("127.0.0.1", ALIST_PORT):
+            return True
+        time.sleep(0.3)
+    return not probe_port("127.0.0.1", ALIST_PORT)
+
+
 def read_admin_password():
     """从随包 ADMIN_PASSWORD.txt 读取管理员密码（仅本机使用）。"""
     try:
@@ -532,12 +655,34 @@ def ensure_alist():
     local = "http://127.0.0.1:%d" % ALIST_PORT
     if probe_port("127.0.0.1", ALIST_PORT):
         if alist_ping(local):
-            log("AList 已在运行（复用现有进程，避免 5244 端口重复启动）。")
-            return local, False
-        raise SetupError(
-            "端口 %d 已被其他程序占用（不是随包 AList）。\n"
-            "请关闭占用该端口的程序，或修改 WatchParty%salist%sdata%sconfig.json "
-            "中的 http_port 后重试。" % ((ALIST_PORT,) + (os.sep,) * 3))
+            listener = alist_listener()
+            if listener is None or _same_executable(listener[1]):
+                log("AList 已在运行（复用现有进程，避免 5244 端口重复启动）。")
+                return local, False
+            if not _is_watchparty_alist_path(listener[1]):
+                # 能 ping 通说明是 AList，但不在 WatchParty 目录里：交给用户处理。
+                raise SetupError(
+                    "端口 %d 已被其他 AList 占用（不是本包的 AList）：%s\n"
+                    "请关闭占用该端口的程序，或修改 WatchParty%salist%sdata%s"
+                    "config.json 中的 http_port 后重试。" % (
+                        (ALIST_PORT, listener[1]) + (os.sep,) * 3))
+            # 另一个 WatchParty 副本（例如"下载后解压了两份"）的 AList 先占住了
+            # 5244：它的密码和 media 目录都属于那个副本，复用它会直接表现为
+            # "AList 管理员登录失败"，即使侥幸登录成功也共享不到本目录的视频。
+            log("检测到 %d 端口由另一个 WatchParty 副本的 AList 占用：%s"
+                % (ALIST_PORT, listener[1]))
+            log("已停止它（pid %s），改用本目录的 AList 与密码。" % listener[0])
+            if not stop_alist_pid(listener[0]):
+                raise SetupError(
+                    "无法停止另一个 WatchParty 副本的 AList（pid %s，%s），"
+                    "5244 端口仍被占用。\n"
+                    "请手动结束该进程（任务管理器 → 详细信息 → alist.exe）后"
+                    "重新点击房主模式。" % (listener[0], listener[1]))
+        else:
+            raise SetupError(
+                "端口 %d 已被其他程序占用（不是随包 AList）。\n"
+                "请关闭占用该端口的程序，或修改 WatchParty%salist%sdata%sconfig.json "
+                "中的 http_port 后重试。" % ((ALIST_PORT,) + (os.sep,) * 3))
 
     fresh_install = not os.path.isfile(ALIST_CONFIG)
     if fresh_install:
@@ -631,8 +776,12 @@ class AlistAdmin:
         if body.get("code") != 200 or not (body.get("data") or {}).get("token"):
             raise SetupError(
                 "AList 管理员登录失败（%s）。\n"
-                "请核对 WatchParty%sADMIN_PASSWORD.txt 中的密码是否与当前 "
-                "AList 数据目录匹配。" % (body.get("message"), os.sep))
+                "常见原因：5244 端口上运行的是**另一个** WatchParty 副本的 AList"
+                "（它的密码与本目录的 %s 不一致），或本目录的密码文件已过期。\n"
+                "请先结束多余的 alist.exe（任务管理器 → 详细信息）后重新点击房主"
+                "模式；若仍失败，可删除 %s 让向导重建 AList 数据与密码。" % (
+                    body.get("message"), ui_path("WatchParty/ADMIN_PASSWORD.txt"),
+                    ui_path("WatchParty/alist/data/")))
         return body["data"]["token"]
 
     # ---- 存储与设置 ----
@@ -738,10 +887,38 @@ def ensure_admin_password():
     return password
 
 
+def _reset_admin_password_and_login(base_url, password):
+    """密码对不上时用包内 alist 重新设置，再登录一次（自愈）。"""
+    result = run_alist_admin(["admin", "set", password])
+    if result.returncode != 0:
+        raise SetupError(
+            "无法重新设置 AList 管理员密码：%s\n"
+            "请关闭多余的 alist.exe 后重新点击房主模式；必要时删除 %s 让向导"
+            "重建 AList 数据。" % ((result.stdout or "").strip()[:300],
+                                  ui_path("WatchParty/alist/data/")))
+    try:
+        return AlistAdmin(base_url, password)
+    except SetupError as exc:
+        raise SetupError(
+            "%s\n"
+            "重设本目录密码后仍无法登录，说明 5244 端口很可能由另一个 WatchParty "
+            "副本的 AList 提供服务。请先结束多余的 alist.exe（任务管理器 → "
+            "详细信息），再重新点击房主模式。" % exc)
+
+
 def configure_alist():
     """确保 sign_all 关闭、guest 可匿名读、/media 存储正确指向本项目。"""
     password = ensure_admin_password()
-    admin = AlistAdmin("http://127.0.0.1:%d" % ALIST_PORT, password)
+    base_url = "http://127.0.0.1:%d" % ALIST_PORT
+    try:
+        admin = AlistAdmin(base_url, password)
+    except SetupError:
+        # ADMIN_PASSWORD.txt 与当前数据目录里的账号对不上（数据目录被复制、
+        # 被别的副本接管、或残留了旧密码文件）。用包内 alist 重新对齐密码后
+        # 再试一次，避免用户只能看到无法自行处理的"登录失败"。
+        log("检测到 AList 管理员密码与当前数据目录不一致，正在重新设置 ...")
+        admin = _reset_admin_password_and_login(base_url, password)
+        log("已按 %s 重新设置管理员密码。" % ui_path("WatchParty/ADMIN_PASSWORD.txt"))
 
     for item in admin.list_settings():
         if item.get("key") == "sign_all" and str(item.get("value")).lower() == "true":
