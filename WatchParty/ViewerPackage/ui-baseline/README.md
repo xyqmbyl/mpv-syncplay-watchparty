@@ -15,3 +15,11 @@ Source: https://github.com/xyqmbyl/mpv-syncplay-watchparty/releases/tag/v0.3.0
 The packaging process adds the Ziggy executable for the target platform
 separately. It must keep `ziggy-darwin` for macOS and `ziggy-windows.exe`
 for Windows without altering these UI files.
+
+## v0.5.1 定制点（在 v0.3.0 基线之上）
+
+- `elements/Menu.lua`：
+  - 新增 `meta+v` / `meta+c`（macOS Command 键）的粘贴/复制快捷键；
+  - 搜索框处于输入状态时 `ctrl+c` / `meta+c` 复制当前输入文本；
+  - 粘贴到未被编辑过的预填搜索建议时整体替换，已编辑过则在光标处插入。
+  - 其余内容与 v0.3.0 基线逐字节一致；更新基线时保留这三处改动。

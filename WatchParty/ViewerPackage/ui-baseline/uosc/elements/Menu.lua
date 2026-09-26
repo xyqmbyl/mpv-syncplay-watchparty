@@ -789,7 +789,13 @@ function Menu:paste()
 	local payload = get_clipboard()
 	if not payload then return end
 	if menu.search then
-		self:search_query_insert(payload)
+		-- An untouched pre-filled suggestion reads as a placeholder, so pasting
+		-- replaces it; pasting into an edited query inserts at the cursor.
+		if menu.search.query == (menu.search_suggestion or '') then
+			self:search_query_replace(payload)
+		else
+			self:search_query_insert(payload)
+		end
 	elseif menu.on_paste then
 		local selected_item = menu.items and menu.selected_index and menu.items[menu.selected_index]
 		local actions = selected_item and selected_item.actions or menu.item_actions
@@ -1195,7 +1201,9 @@ function Menu:search_ensure_key_bindings()
 end
 
 function Menu:enable_key_bindings()
-	local standalone_keys = {'/', 'kp_divide', 'mbtn_back', 'ctrl+f', 'ctrl+v', 'ctrl+c'}
+	-- `meta` is the Command key on macOS, where Cmd+V/Cmd+C are the standard
+	-- clipboard shortcuts; keep the ctrl variants for control-key users.
+	local standalone_keys = {'/', 'kp_divide', 'mbtn_back', 'ctrl+f', 'ctrl+v', 'ctrl+c', 'meta+v', 'meta+c'}
 	if type(self.root.bind_keys) == 'table' then itable_append(standalone_keys, self.root.bind_keys) end
 	-- `+` at the end enables `repeatable` flag
 	local modifiable_keys = {'up+', 'down+', 'left', 'right', 'enter', 'kp_enter', 'bs', 'tab', 'esc', 'pgup+',
@@ -1319,8 +1327,12 @@ function Menu:handle_shortcut(shortcut, info)
 		end
 	elseif key == 'mbtn_back' then
 		self:back()
-	elseif id == 'ctrl+v' then
+	elseif id == 'ctrl+v' or id == 'meta+v' then
 		self:paste()
+	elseif (id == 'ctrl+c' or id == 'meta+c') and menu.search then
+		-- While a search is active, copy the text being typed instead of
+		-- forwarding the shortcut to the menu callback.
+		set_clipboard(menu.search.query)
 	else
 		trigger_shortcut(shortcut)
 	end

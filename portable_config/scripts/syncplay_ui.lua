@@ -594,6 +594,16 @@ local function run_action(action)
         end
     elseif action == "mode-local" then
         activate_local_mode()
+    elseif action == "copy-host" then
+        -- 共享地址是观看者加入的入口，提供一键复制（mpv 的 clipboard 属性在
+        -- Windows/macOS 都可用）。
+        local host = trim(options.tailscale_host)
+        if host == "" then
+            notify("共享地址为空，请先完成房主模式配置")
+        else
+            local ok = mp.set_property("clipboard/text", host)
+            notify(ok and ("已复制共享地址：" .. host) or "复制失败，请手动选择地址")
+        end
     elseif action == "close" then
         close_menu()
     end
@@ -1008,6 +1018,11 @@ local function build_mode_items()
         items[#items + 1] = {title = "房主模式已启用",
             hint = "别忘了在 Tailscale 后台对本设备点 Share",
             icon = "home_work", selectable = false, muted = true}
+        if trim(options.tailscale_host) ~= "" then
+            items[#items + 1] = {title = "复制共享地址",
+                hint = "把 " .. tostring(options.tailscale_host) .. " 复制给观看者",
+                icon = "content_copy", value = action_value("copy-host")}
+        end
     else
         items[#items + 1] = {title = "切换为房主模式",
             hint = tailscale_busy and "正在配置网络，请稍候再点"

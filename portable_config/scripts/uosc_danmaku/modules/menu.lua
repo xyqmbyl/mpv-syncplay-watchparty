@@ -556,9 +556,40 @@ function open_input_menu_uosc()
     mp.commandv("script-message-to", "uosc", "open-menu", json_props)
 end
 
+-- macOS 的 mpv 前端没有 IME 管线（--input-ime 仅支持 Windows/Wayland），
+-- 菜单内搜索框无法用拼音打出中文。改用系统弹窗收集搜索词（原生输入框
+-- 支持中文输入法），确认后直接搜索；取消或清空则回退到菜单内输入（可粘贴）。
+function open_input_menu_mac()
+    local title = parse_title() or ""
+    local prompt = 'display dialog "请输入要搜索的番剧名称（支持中文输入法；点取消可在菜单内输入）：" default answer "' ..
+        title:gsub('\\', '\\\\'):gsub('"', '\\"') .. '" with title "弹幕搜索"'
+    mp.command_native_async({
+        name = "subprocess",
+        playback_only = false,
+        capture_stdout = true,
+        capture_stderr = true,
+        args = { "osascript", "-e", prompt },
+    }, function(success, result, err)
+        local text = nil
+        if success and result and result.status == 0 and result.stdout then
+            text = result.stdout:match("text returned:(.*)$")
+            text = text and text:gsub("%s+$", "") or nil
+        end
+        if text and text ~= "" then
+            mp.commandv("script-message-to", mp.get_script_name(), "search-anime-event", text)
+        else
+            open_input_menu_uosc()
+        end
+    end)
+end
+
 function open_input_menu()
     if uosc_available then
-        open_input_menu_uosc()
+        if mp.get_property_native("platform") == "darwin" then
+            open_input_menu_mac()
+        else
+            open_input_menu_uosc()
+        end
     elseif input_loaded then
         mp.add_timeout(0.01, function()
             open_input_menu_get()
