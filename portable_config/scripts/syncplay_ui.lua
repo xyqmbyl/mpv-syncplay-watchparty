@@ -23,6 +23,7 @@ local options = {
     tailscale_mode = "off",
     tailscale_host = "",
     tailscale_helper = "~~/syncplay/tailscale_integration.py",
+    setup_helper = "~~/syncplay/watchparty_setup.py",
     tailscale_installer = "",
 }
 pcall(function() require("mp.options").read_options(options, "syncplay_ui") end)
@@ -71,6 +72,7 @@ end
 local status_file = resolve_path(options.status_file, "/syncplay/syncplay_status.json")
 local command_file = resolve_path(options.command_file, "/syncplay/syncplay_command.json")
 local tailscale_helper = resolve_path(options.tailscale_helper, "/syncplay/tailscale_integration.py")
+local setup_helper = resolve_path(options.setup_helper, "/syncplay/watchparty_setup.py")
 local tailscale_installer = resolve_path(options.tailscale_installer, tailscale_installer_default)
 
 local state = {
@@ -110,6 +112,9 @@ local uosc_available = true
 local panel_open = false
 local menu_kind = nil
 local client_handle = nil
+-- 面板主动结束客户端进程时递增；旧进程的回调据此判断自己已经作废，
+-- 不会把这次中止报告成“客户端启动失败”，也不会覆盖新进程的句柄。
+local client_generation = 0
 -- Forward declaration: the Join action can launch the bundled client before
 -- the function's implementation appears below.
 local launch_client
@@ -302,22 +307,24 @@ local function apply_tailscale_payload(payload)
     end
     -- Viewer configuration intentionally clears publishing mappings.  Apply
     -- empty values too, otherwise this mpv process could keep stale host paths
-    -- in memory until it is restarted.
+    -- in memory until it is restarted.  alist_enabled must be applied as well:
+    -- a merged install starts with sharing off and only starts publishing once
+    -- a role has been selected in this panel.
     for _, key in ipairs({
-        "alist_server", "alist_root", "alist_virtual_root", "alist_map",
-        "tailscale_mode", "tailscale_host",
+        "alist_enabled", "alist_server", "alist_root", "alist_virtual_root",
+        "alist_map", "tailscale_mode", "tailscale_host",
     }) do
         if payload[key] ~= nil then options[key] = tostring(payload[key]) end
     end
 end
 
-local function run_tailscale_helper(arguments, callback, silent)
+local function run_helper(script, arguments, callback, silent)
     if tailscale_busy then
-        if not silent then notify("Tailscale 操作正在进行") end
+        if not silent then notify("上一项网络配置还在进行") end
         return false
     end
     local python = mp.command_native({"expand-path", python_binary})
-    local args = {python, tailscale_helper, "--json"}
+    local args = {python, script, "--json"}
     for _, value in ipairs(arguments or {}) do args[#args + 1] = tostring(value) end
     tailscale_busy = true
     mp.command_native_async({
@@ -337,13 +344,21 @@ local function run_tailscale_helper(arguments, callback, silent)
         local operation_ok = process_ok and payload ~= nil and payload.ok ~= false
         local detail = (payload and payload.error)
             or (type(result) == "table" and result.stderr)
-            or error or "Tailscale 操作失败"
+            or error or "配置操作失败"
         detail = trim(detail)
-        if not operation_ok and detail == "" then detail = "Tailscale 操作失败" end
+        if not operation_ok and detail == "" then detail = "配置操作失败" end
         if callback then callback(operation_ok, payload, detail) end
         refresh_panel_soon()
     end)
     return true
+end
+
+local function run_tailscale_helper(arguments, callback, silent)
+    return run_helper(tailscale_helper, arguments, callback, silent)
+end
+
+local function run_setup_helper(arguments, callback, silent)
+    return run_helper(setup_helper, arguments, callback, silent)
 end
 
 local function refresh_tailscale_status(silent)
@@ -360,6 +375,54 @@ local function stop_for_tailscale_change()
         return true
     end
     return false
+end
+
+-- 媒体地址只在 mpv_syncplay 启动时读取一次。运行模式改变后必须结束当前
+-- 客户端进程，否则它会继续使用旧的 --alist-* 参数（房主不发布、观看者
+-- 指向旧地址），只有重新启动进程才会生效。
+local function stop_client_process()
+    if not client_handle then return false end
+    local handle = client_handle
+    client_handle = nil
+    client_generation = client_generation + 1
+    pcall(mp.abort_async_command, handle)
+    return true
+end
+
+local function role_change_notice(headline)
+    local message = headline
+    if stop_client_process() then
+        message = message .. " 请点击「加入 / 连接房间」应用新地址。"
+    elseif state.logged or state.connecting then
+        write_command("stop")
+        message = message .. " 媒体地址已保存，请重新运行启动脚本后再加入房间。"
+    end
+    notify(message)
+end
+
+local function activate_host_mode()
+    notify("正在配置房主模式；如出现“用户账户控制”提示请选择“是”…")
+    run_setup_helper({"mode-host"}, function(ok, payload, detail)
+        if not ok then
+            tailscale_state.error = detail
+            notify(detail)
+            return
+        end
+        apply_tailscale_payload(payload)
+        role_change_notice("房主模式已切换。请在 Tailscale 后台对本设备点 Share。")
+    end)
+end
+
+local function activate_local_mode()
+    run_tailscale_helper({"configure-local"}, function(ok, payload, detail)
+        if not ok then
+            tailscale_state.error = detail
+            notify(detail)
+            return
+        end
+        apply_tailscale_payload(payload)
+        role_change_notice("已切换为仅本机观看。")
+    end)
 end
 
 local function configure_tailscale_host()
@@ -380,11 +443,9 @@ local function configure_tailscale_host()
     end)
 end
 
+-- 观看者模式既可以从「运行模式」选择，也可以在观看者模式下用面板输入的
+-- 房主地址重新指定；因此这里不再判断当前模式，调用方负责限制入口。
 local function configure_tailscale_viewer(host)
-    if trim(options.tailscale_mode):lower() ~= "viewer" then
-        notify("仅观看者配置可以填写房主地址")
-        return
-    end
     host = trim(host)
     if host == "" then
         notify("请输入房主的 Tailscale 100.x 地址")
@@ -396,10 +457,8 @@ local function configure_tailscale_viewer(host)
             notify(detail)
             return
         end
-        if not stop_for_tailscale_change() then
-            notify("观看者媒体地址已配置")
-        end
         apply_tailscale_payload(payload)
+        role_change_notice("观看者模式已切换。现在可以「加入 / 连接房间」。")
     end)
 end
 
@@ -481,6 +540,12 @@ local function run_action(action)
         open_tailscale()
     elseif action == "tailscale-host" then
         configure_tailscale_host()
+    elseif action == "mode-host" then
+        activate_host_mode()
+    elseif action == "mode-viewer" then
+        configure_tailscale_viewer(trim(options.tailscale_host))
+    elseif action == "mode-local" then
+        activate_local_mode()
     elseif action == "close" then
         close_menu()
     end
@@ -566,6 +631,7 @@ launch_client = function()
     }
     local _, alist_error = append_alist_arguments(args)
     if alist_error then notify(alist_error) end
+    local generation = client_generation
     client_handle = mp.command_native_async({
         name = "subprocess",
         args = args,
@@ -573,6 +639,9 @@ launch_client = function()
         capture_stdout = false,
         capture_stderr = false,
     }, function(success, result, error)
+        -- 面板在切换运行模式时主动结束了这个进程：它已经作废，不要再报错，
+        -- 也不要把 client_handle 置空（可能已经属于新启动的客户端）。
+        if generation ~= client_generation then return end
         client_handle = nil
         if not success then
             state.last_error = tostring(error or (result and result.stderr) or "客户端启动失败")
@@ -821,6 +890,18 @@ local function build_member_items()
     return items
 end
 
+-- 合并安装包在首次运行前不预设角色：tailscale_mode=off 表示"还没选"。
+local function current_mode()
+    return trim(options.tailscale_mode):lower()
+end
+
+local function mode_label()
+    local mode = current_mode()
+    if mode == "host" then return "房主", "home_work" end
+    if mode == "viewer" then return "观看者", "visibility" end
+    return "未选择", "help"
+end
+
 local function tailscale_status_label()
     if tailscale_state.installed ~= true then return "未安装", "download" end
     if tailscale_state.online == true then return "已连接", "vpn_lock" end
@@ -851,13 +932,66 @@ local function build_tailscale_items()
         items[#items + 1] = {title = "安装 Tailscale", icon = "download",
             value = action_value("tailscale-install")}
     end
-    if trim(options.tailscale_mode):lower() == "host" then
+    if current_mode() == "host" then
         items[#items + 1] = {title = "房主：写入共享地址",
             hint = "Device Sharing · 100.x:5244",
             icon = "security", value = action_value("tailscale-host")}
     end
     items[#items + 1] = {title = "刷新状态", icon = "refresh",
         value = action_value("tailscale-refresh")}
+    return items
+end
+
+-- 「运行模式」二级菜单：一台电脑只选一次，之后由配置文件记住。
+-- 菜单本身是 palettes（可输入房主 100.x 地址），下面的条目负责点选。
+local function build_mode_items()
+    local mode = current_mode()
+    local label, icon = mode_label()
+    local hint = trim(options.alist_server)
+    if mode == "off" then
+        hint = "首次使用请选择一种模式"
+    elseif mode == "host" then
+        hint = trim(options.tailscale_host) ~= ""
+            and ("本机共享地址：" .. tostring(options.tailscale_host)) or "尚未写入共享地址"
+    end
+    local items = {
+        {title = "当前模式：" .. label, hint = hint, icon = icon,
+            selectable = false, bold = true},
+    }
+    if mode == "host" then
+        items[#items + 1] = {title = "房主模式已启用",
+            hint = "别忘了在 Tailscale 后台对本设备点 Share",
+            icon = "home_work", selectable = false, muted = true}
+    else
+        items[#items + 1] = {title = "切换为房主模式",
+            hint = "发布本机 WatchParty\\media 并共享给观看者",
+            icon = "home_work", value = action_value("mode-host")}
+    end
+    if mode == "viewer" then
+        items[#items + 1] = {title = "观看者模式已启用",
+            hint = tostring(options.alist_server or "未设置"),
+            icon = "visibility", selectable = false, muted = true}
+    else
+        items[#items + 1] = {title = "切换为观看者模式",
+            hint = trim(options.tailscale_host) ~= ""
+                and ("房主地址：" .. tostring(options.tailscale_host))
+                or "先在上方输入房主的 100.x.x.x 再回车",
+            icon = "visibility", value = action_value("mode-viewer")}
+    end
+    if mode == "off" then
+        items[#items + 1] = {title = "只在本机观看（不共享）",
+            hint = "维持现状即可；随时可以再选模式",
+            icon = "movie", selectable = false, muted = true}
+    else
+        items[#items + 1] = {title = "改回仅本机观看",
+            hint = "关闭共享；已保存的地址会保留",
+            icon = "movie", value = action_value("mode-local")}
+    end
+    if tailscale_state.installed ~= true then
+        items[#items + 1] = {title = "提示：两种模式都需要先安装 Tailscale",
+            hint = "请在下面的「Tailscale」条目里安装并登录",
+            icon = "info", selectable = false, muted = true}
+    end
     return items
 end
 
@@ -900,6 +1034,17 @@ local function build_items()
             items = build_overview_items(),
         },
         {
+            id = "syncplay.mode",
+            title = "运行模式",
+            hint = select(1, mode_label()),
+            icon = select(2, mode_label()),
+            search_style = "palette",
+            search_debounce = "submit",
+            search_suggestion = tostring(options.tailscale_host or ""),
+            on_search = {"script-message-to", script_name, "syncplay-mode-submit"},
+            items = build_mode_items(),
+        },
+        {
             id = "syncplay.playback",
             title = "播放控制",
             hint = playback_hint,
@@ -923,11 +1068,11 @@ local function build_items()
             title = "Tailscale",
             hint = select(1, tailscale_status_label()),
             icon = "vpn_lock",
-            search_style = trim(options.tailscale_mode):lower() == "viewer" and
+            search_style = current_mode() == "viewer" and
                 "palette" or "disabled",
             search_debounce = "submit",
             search_suggestion = tostring(options.tailscale_host or ""),
-            on_search = trim(options.tailscale_mode):lower() == "viewer" and
+            on_search = current_mode() == "viewer" and
                 {"script-message-to", script_name, "syncplay-tailscale-host-submit"} or nil,
             items = build_tailscale_items(),
         },
@@ -951,7 +1096,8 @@ function open_panel()
         footnote = tostring(setting_value("room") or "未设置") .. "  ·  " .. select(2, connection_status()),
         search_style = "disabled",
         callback = {script_name, "syncplay-menu-event"},
-        selected_index = 1,
+        -- 还没选过运行模式时把光标停在「运行模式」上（概览之后的第一项）。
+        selected_index = current_mode() == "off" and 2 or 1,
         keep_open = true,
         persistent = true,
         items = build_items(),
@@ -1006,11 +1152,27 @@ mp.register_script_message("syncplay-input-submit", function(kind, query, _menu_
 end)
 
 mp.register_script_message("syncplay-tailscale-host-submit", function(query, _menu_id)
-    if trim(options.tailscale_mode):lower() ~= "viewer" then
+    if current_mode() ~= "viewer" then
         notify("当前不是观看者配置，已忽略房主地址输入")
         return
     end
     configure_tailscale_viewer(query)
+end)
+
+-- 「运行模式」的 palette 输入：既能填房主的 100.x 地址（切到观看者），
+-- 也能直接输入"房主"两个字（切到房主模式）。
+mp.register_script_message("syncplay-mode-submit", function(query, _menu_id)
+    local text = trim(query)
+    if text == "" then
+        notify("请输入房主的 100.x.x.x 地址，或输入“房主”两个字")
+        return
+    end
+    local lowered = text:lower()
+    if lowered == "房主" or lowered == "房主模式" or lowered == "host" then
+        activate_host_mode()
+        return
+    end
+    configure_tailscale_viewer(text)
 end)
 
 local function poll_status()
@@ -1024,6 +1186,34 @@ end
 mp.add_periodic_timer(0.5, poll_status)
 mp.add_key_binding("ctrl+shift+s", "syncplay-ui-toggle", toggle_panel)
 mp.add_timeout(0.7, function() refresh_tailscale_status(true) end)
+
+-- 房主模式下随包 AList 必须常驻（观看者要从这里取流）。启动 mpv 时静默
+-- 确认一次：已在运行就复用，没运行就拉起。启动阶段的状态查询可能还在
+-- 运行，helper 是串行的，所以失败（被占用）时退避重试几次，最后才提示。
+local function ensure_host_alist(attempt)
+    if current_mode() ~= "host" then return end
+    local started = run_setup_helper({"ensure-alist"}, function(ok, _payload, detail)
+        if ok then return end
+        if attempt < 3 then
+            mp.add_timeout(2.0, function() ensure_host_alist(attempt + 1) end)
+        else
+            notify("AList 未能启动：" .. detail)
+        end
+    end, true)
+    if not started and attempt < 3 then
+        mp.add_timeout(1.5, function() ensure_host_alist(attempt + 1) end)
+    end
+end
+mp.add_timeout(1.5, function() ensure_host_alist(1) end)
+
+-- 合并包首次运行尚未选择角色：给一次明确指引，选过之后不再出现。
+mp.add_timeout(2.5, function()
+    if current_mode() ~= "off" then return end
+    mp.osd_message(
+        "WatchParty 首次使用：按 Ctrl+Shift+S 打开面板，在「运行模式」中选择房主或观看者",
+        8)
+end)
+
 mp.register_event("shutdown", function()
     if panel_open then close_menu() end
 end)

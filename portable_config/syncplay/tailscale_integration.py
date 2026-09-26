@@ -33,6 +33,10 @@ CONNECTION_FILE = os.path.join(TAILSCALE_DIR, "connection.json")
 TAILSCALE_IPV4 = ipaddress.ip_network("100.64.0.0/10")
 TAILSCALE_IPV6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 DEFAULT_ALIST_PORT = 5244
+# 房主发布随包 media 目录时使用的固定映射。观看者的 configure-viewer 会清空
+# 这两项，所以切回房主模式时必须重新写回来，否则房主的 AList 什么都不发布。
+HOST_ALIST_ROOT = "~~/../WatchParty/media"
+HOST_ALIST_VIRTUAL_ROOT = "/media"
 # 每个平台/架构只携带并校验自己的官方安装包；哈希与包内文件一一对应。
 # Windows 包内 Python 的位数与包架构一致，因此用 Python 自身位数选 MSI。
 def _python_bitness():
@@ -269,6 +273,10 @@ def build_host_configuration(status):
     return {
         "alist_enabled": "yes",
         "alist_server": "http://%s:%d" % (ipv4, DEFAULT_ALIST_PORT),
+        # 从观看者模式切回房主时必须恢复发布目录：观看者的
+        # configure-viewer 会把 alist_root / alist_map 清空。
+        "alist_root": HOST_ALIST_ROOT,
+        "alist_virtual_root": HOST_ALIST_VIRTUAL_ROOT,
         "tailscale_mode": "host",
         "tailscale_host": ipv4,
     }
@@ -286,6 +294,18 @@ def build_viewer_configuration(host):
         "alist_map": "",
         "tailscale_mode": "viewer",
         "tailscale_host": parsed.hostname or "",
+    }
+
+
+def build_local_configuration():
+    """关闭共享：保留已保存的地址，只停止对外发布/取流。
+
+    合并安装包首次运行时 ``tailscale_mode=off``，用户可能只想本机观看；
+    面板的「改回仅本机观看」用它把角色退回未选择状态。
+    """
+    return {
+        "alist_enabled": "no",
+        "tailscale_mode": "off",
     }
 
 
@@ -405,6 +425,13 @@ def configure_viewer(host, config_path=DEFAULT_CONFIG, cli_path=None):
     return status
 
 
+def configure_local(config_path=DEFAULT_CONFIG):
+    """退回"仅本机观看"：关闭 AList 共享，不影响 Tailscale 本身。"""
+    configuration = build_local_configuration()
+    update_syncplay_config(config_path, configuration)
+    return configuration
+
+
 def open_tailscale(cli_path=None):
     cli_path = locate_tailscale(cli_path)
     if cli_path is None:
@@ -468,6 +495,7 @@ def parse_args(argv=None):
     subparsers.add_parser("configure-host", help="配置房主的 Tailscale IPv4 直连地址")
     viewer = subparsers.add_parser("configure-viewer", help="配置观看者使用房主地址")
     viewer.add_argument("host", nargs="?", help="房主 Tailscale IPv4（100.x.x.x）")
+    subparsers.add_parser("configure-local", help="关闭共享，退回仅本机观看")
     subparsers.add_parser("open", help="打开 Tailscale 登录界面")
     subparsers.add_parser("verify-installer", help="校验项目内的官方安装包")
     return parser.parse_args(argv)
@@ -480,10 +508,13 @@ def main(argv=None):
             result = query_status(args.cli)
             result.update({
                 key: value for key, value in read_syncplay_config(args.config).items()
-                if key in ("alist_server", "tailscale_mode", "tailscale_host")
+                if key in ("alist_enabled", "alist_server", "alist_root",
+                           "alist_virtual_root", "tailscale_mode", "tailscale_host")
             })
         elif args.command == "configure-host":
             result = configure_host(args.config, args.cli)
+        elif args.command == "configure-local":
+            result = configure_local(args.config)
         elif args.command == "configure-viewer":
             host = args.host
             if not host:

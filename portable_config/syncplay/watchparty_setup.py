@@ -59,6 +59,12 @@ VIDEO_EXTENSIONS = {
     ".wmv",
 }
 MAX_MEDIA_SCAN_DIRECTORIES = 32
+# 房主放行防火墙时使用的规则名与脚本（与房主模式一键配置保持一致）。
+FIREWALL_RULE_NAME = "MPV Syncplay WatchParty AList"
+HOST_FIREWALL_SCRIPT = os.path.join(
+    WATCHPARTY_DIR, "Tailscale", "configure-host-firewall.bat")
+# 用户取消了 UAC 授权；与普通失败区分，便于给出"重新点击并选择是"的提示。
+ELEVATION_CANCELLED = -2
 
 
 class SetupError(RuntimeError):
@@ -68,8 +74,16 @@ class SetupError(RuntimeError):
 # ----------------------------------------------------------------------
 # 通用工具
 # ----------------------------------------------------------------------
+_LOG_TO_STDERR = False
+
+
 def log(message):
-    print(message, flush=True)
+    """人类可读的进度输出。
+
+    ``--json`` 模式下全部改走 stderr，保证 stdout 恰好只有最后一行 JSON，
+    这样 mpv 面板才能直接解析（子进程的 stdout 也会被并入 stderr）。
+    """
+    print(message, file=sys.stderr if _LOG_TO_STDERR else sys.stdout, flush=True)
 
 
 def ui_path(text):
@@ -78,7 +92,135 @@ def ui_path(text):
 
 
 # 房主首次设置入口：Windows 批处理，macOS 用 .command。
-HOST_FIRST_RUN_NAME = "房主首次运行.bat" if IS_WINDOWS else "首次设置.command"
+HOST_FIRST_RUN_NAME = "首次运行.bat" if IS_WINDOWS else "首次设置.command"
+
+
+# ----------------------------------------------------------------------
+# 第 0 步：Windows 防火墙（仅放行 Tailscale 网段，需要管理员权限）
+# ----------------------------------------------------------------------
+def is_admin():
+    """当前进程是否已具备管理员权限（非 Windows 恒为 False）。"""
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # pragma: no cover - 仅在异常 shell 上触发
+        return False
+
+
+def elevate_and_wait(target, parameters=None, timeout=900.0):
+    """以管理员身份运行 target 并等待结束，返回退出码。
+
+    用户拒绝 UAC 时返回 ``ELEVATION_CANCELLED``。只用于必须提权的单步操作
+    （netsh 防火墙规则）；命令窗口以隐藏方式启动，不干扰正在播放的 mpv。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    see_mask_noclose_process = 0x00000040
+    see_mask_noasync = 0x00000100
+    sw_hide = 0
+    error_cancelled = 1223
+    wait_timeout = 0x00000102
+
+    class Shellexecuteinfow(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    shell32 = ctypes.windll.shell32
+    kernel32 = ctypes.windll.kernel32
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+
+    info = Shellexecuteinfow()
+    info.cbSize = ctypes.sizeof(Shellexecuteinfow)
+    info.fMask = see_mask_noclose_process | see_mask_noasync
+    info.lpVerb = "runas"
+    info.lpFile = target
+    info.lpParameters = parameters
+    info.lpDirectory = os.path.dirname(target) or None
+    info.nShow = sw_hide
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = kernel32.GetLastError()
+        if error == error_cancelled:
+            return ELEVATION_CANCELLED
+        raise SetupError("无法启动管理员进程（Windows 错误码 %s）。" % error)
+    if not info.hProcess:
+        return 0
+    try:
+        if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) == wait_timeout:
+            raise SetupError("管理员进程超过 %.0f 秒仍未结束，已放弃等待。" % timeout)
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise SetupError("无法读取管理员进程的退出码。")
+        return int(code.value)
+    finally:
+        kernel32.CloseHandle(info.hProcess)
+
+
+def _run_hidden(arguments, timeout=900.0):
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    completed = subprocess.run(
+        arguments,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        creationflags=flags,
+        check=False,
+    )
+    return completed.returncode
+
+
+def configure_host_firewall():
+    """放行 100.64.0.0/10 访问随包 AList 的 5244 端口。
+
+    只对这一步按需提权（netsh），且规则严格限制来源网段，不使用
+    "程序首次监听时由系统弹窗放行" 的做法——那会同时向局域网/公网开放。
+    非 Windows 平台无需该规则，直接返回 unsupported。
+    """
+    if not IS_WINDOWS:
+        return {"configured": False, "reason": "unsupported"}
+    if not os.path.isfile(ALIST_EXE):
+        raise SetupError(
+            "没有找到随包的 AList（%s），无法配置防火墙规则。" % ALIST_EXE)
+    if not os.path.isfile(HOST_FIREWALL_SCRIPT):
+        raise SetupError(
+            "找不到 %s，无法配置防火墙规则。" % ui_path("WatchParty/Tailscale/configure-host-firewall.bat"))
+
+    if is_admin():
+        log("已经具备管理员权限，直接写入防火墙规则。")
+        code = _run_hidden(["cmd.exe", "/c", HOST_FIREWALL_SCRIPT])
+    else:
+        log("修改 Windows 防火墙需要管理员权限，正在弹出授权窗口 ...")
+        code = elevate_and_wait(HOST_FIREWALL_SCRIPT)
+
+    if code == 0:
+        log("防火墙已放行：仅 Tailscale 网段（100.64.0.0/10）可访问 AList 的 5244 端口。")
+        return {"configured": True, "rule": FIREWALL_RULE_NAME}
+    if code == ELEVATION_CANCELLED:
+        raise SetupError(
+            "已取消管理员授权，防火墙规则没有写入。\n"
+            "房主模式必须放行 Tailscale 网段，请重新选择房主模式并在弹窗中点击“是”。")
+    raise SetupError(
+        "防火墙规则写入失败（退出码 %s）。\n"
+        "可能是安全软件或组策略限制；请右键以管理员身份运行 "
+        "WatchParty\\Tailscale\\configure-host-firewall.bat 后重试。" % code)
 
 
 def _plain_url(url):
@@ -291,7 +433,7 @@ def ensure_alist():
         raise SetupError(
             "没有找到随包的 AList（%s）。\n"
             "你下载的可能是 GitHub 源码 ZIP；请下载 Release 中的 "
-            "WatchParty-Host 完整房主包。" % ALIST_EXE)
+            "WatchParty 完整安装包。" % ALIST_EXE)
 
     local = "http://127.0.0.1:%d" % ALIST_PORT
     if probe_port("127.0.0.1", ALIST_PORT):
@@ -650,8 +792,8 @@ def _viewer_origin(host, config_path):
             "alist_server", "").strip()
     if not address:
         raise SetupError(
-            "房主 alist_server 尚未配置。请运行观看者首次设置，并输入房主提供的 "
-            "100.x.x.x 地址。")
+            "房主 alist_server 尚未配置。请在联机面板选择「运行模式 → 房主模式」"
+            "完成自动配置，或输入房主提供的 100.x.x.x 地址。")
     if "://" not in address:
         address = "http://%s:%d" % (address, ALIST_PORT)
     try:
@@ -819,10 +961,12 @@ def _log_anonymous_failure(result):
     alist_code = getattr(result, "alist_code", None)
     if "guest user is disabled" in combined or ("guest" in combined and "disabled" in combined):
         log("AList 游客访问未开启（Guest user is disabled）。")
-        log("下一步：请房主重新运行“%s”，启用 guest 匿名只读访问。" % HOST_FIRST_RUN_NAME)
+        log("下一步：请房主在面板「联机 → 运行模式」重新选择房主模式（或重新运行“%s”），"
+            "启用 guest 匿名只读访问。" % HOST_FIRST_RUN_NAME)
     elif getattr(result, "signature_required", False) or "expire missing" in combined:
         log("AList 仍启用了签名（expire missing），匿名视频 URL 无法使用。")
-        log("下一步：请房主重新运行“%s”，关闭全局和 /media 存储签名。" % HOST_FIRST_RUN_NAME)
+        log("下一步：请房主在面板「联机 → 运行模式」重新选择房主模式（或重新运行“%s”），"
+            "关闭全局和 /media 存储签名。" % HOST_FIRST_RUN_NAME)
     elif http_status == 401 or alist_code == 401:
         log("AList 视频 URL 匿名访问返回 401，游客读取权限尚未正确开放。")
         log("下一步：请房主检查 guest 是否启用，以及 /media 是否设置了密码。")
@@ -831,7 +975,8 @@ def _log_anonymous_failure(result):
         log("实际结果：%s" % (result_text or getattr(result, "status_text", "未知")))
     else:
         log("AList 视频 URL 无法匿名访问：%s" % (result_text or "未知错误"))
-        log("下一步：请房主重新运行“%s”完成 AList 自检。" % HOST_FIRST_RUN_NAME)
+        log("下一步：请房主在面板「联机 → 运行模式」重新选择房主模式（或重新运行“%s”）"
+            "完成 AList 自检。" % HOST_FIRST_RUN_NAME)
 
 
 def diagnose_host(host=None, media_path=None, config_path=UI_CONFIG):
@@ -1159,7 +1304,7 @@ def run_doctor(host=None, media_path=None, config_path=UI_CONFIG, role="auto"):
 # ----------------------------------------------------------------------
 def run_host_wizard(config_path=UI_CONFIG, install_if_missing=False):
     log("=" * 56)
-    log("  WatchParty 房主首次运行向导")
+    log("  WatchParty 房主模式向导")
     log("=" * 56)
     log("")
     log("[1/4] 检查并启动随包 AList")
@@ -1206,17 +1351,144 @@ def run_host_wizard(config_path=UI_CONFIG, install_if_missing=False):
     return 0
 
 
+def _safe_tailscale_status():
+    """查询 Tailscale 状态；任何异常都降级为空状态，不打断模式切换。"""
+    try:
+        return tailscale_integration.query_status()
+    except Exception as exc:  # noqa: BLE001 - 面板需要稳定的 JSON，而不是堆栈
+        return {"error": str(exc)}
+
+
+def _mode_host_failure_message(status):
+    if not status.get("installed"):
+        return ("AList、/media 与匿名播放都已配置完成，但还没有安装 Tailscale。\n"
+                "请先安装并登录 Tailscale，然后再次选择“房主模式”。")
+    if not status.get("online"):
+        return ("AList、/media 与匿名播放都已配置完成，但 Tailscale 还没有登录/连接。\n"
+                "请在 Tailscale 图标显示已连接后，再次选择“房主模式”。")
+    if not status.get("ipv4"):
+        return ("Tailscale 已连接但没有分配 100.x IPv4 地址，"
+                "请检查 Tailscale 状态后再次选择“房主模式”。")
+    return "房主环境最终自检未通过，请查看面板里的“完整诊断”输出后重试。"
+
+
+# 面板原地更新配置时需要回传的键（与 syncplay_ui.lua 的 apply_tailscale_payload 一致）。
+MODE_HOST_KEYS = ("alist_enabled", "alist_server", "alist_root",
+                  "alist_virtual_root", "tailscale_mode", "tailscale_host")
+
+
+def run_mode_host(config_path=UI_CONFIG, install_if_missing=False):
+    """从面板一键进入房主模式：防火墙 → AList → 自检 → Tailscale 地址。
+
+    等价于旧版独立的房主首次运行向导，但全程非交互、且不启动第二个 mpv：返回的
+    字典由面板在内存里直接应用，用户不必重启。返回 ``ok=False`` 时 AList
+    侧已完成的配置仍然保留，可直接重试。
+    """
+    result = {"ok": False, "tailscale_mode": "host"}
+    log("=" * 56)
+    log("  WatchParty 切换到房主模式")
+    log("=" * 56)
+    log("")
+    if IS_WINDOWS:
+        log("[防火墙] 仅放行 Tailscale 网段访问随包 AList 的 5244 端口")
+        result["firewall"] = ("configured" if configure_host_firewall().get("configured")
+                              else "unsupported")
+        log("")
+
+    code = run_host_wizard(config_path, install_if_missing)
+
+    status = _safe_tailscale_status()
+    result["tailscale_ready"] = bool(
+        status.get("installed") and status.get("online") and status.get("ipv4"))
+    values = tailscale_integration.read_syncplay_config(config_path)
+    for key in MODE_HOST_KEYS:
+        if values.get(key) is not None:
+            result[key] = values[key]
+    result["device_share"] = "manual"
+
+    if code != 0:
+        result["stage"] = "verify" if result["tailscale_ready"] else "tailscale"
+        result["error"] = _mode_host_failure_message(status)
+        return result
+
+    result["ok"] = True
+    result["message"] = ("房主模式已启用。最后一步需要你在浏览器里完成：打开 "
+                         "https://login.tailscale.com/admin/machines ，"
+                         "对本设备点击 Share，把共享链接发给观看者。")
+    return result
+
+
+def run_bootstrap(config_path=UI_CONFIG, install_if_missing=True):
+    """合并包首次运行：准备共同前置条件，角色留给面板选择。
+
+    与 ``full`` / ``mode-host`` 不同，这里不预设房主或观看者——两种模式都
+    只需要 Tailscale 可用，角色本身在 mpv 面板的「运行模式」里选择。因此本
+    向导只负责：检测 Tailscale，缺失时打开官方安装器，然后给出下一步指引。
+    """
+    log("=" * 56)
+    log("  WatchParty 首次运行")
+    log("=" * 56)
+    log("")
+    status = _safe_tailscale_status()
+    if not status.get("installed") and install_if_missing:
+        if IS_WINDOWS:
+            installer = os.path.join(WATCHPARTY_DIR, "Tailscale",
+                                     "install-tailscale.bat")
+            if os.path.isfile(installer):
+                log("[1/2] 未检测到 Tailscale，正在打开官方安装器（签名已校验）...")
+                subprocess.run(["cmd", "/c", installer], check=False)
+            else:
+                log("[1/2] 未找到 WatchParty\\Tailscale\\install-tailscale.bat，"
+                    "请从 Tailscale 官网手动安装。")
+        else:
+            installer = tailscale_integration.INSTALLER_PATH
+            if os.path.isfile(installer):
+                log("[1/2] 未检测到 Tailscale，正在打开官方安装包 ...")
+                subprocess.run(["open", installer], check=False)
+            else:
+                log("[1/2] 未找到包内 Tailscale 安装包，请从 Tailscale 官网手动安装。")
+        status = _safe_tailscale_status()
+
+    if status.get("installed"):
+        if status.get("online") and status.get("ipv4"):
+            log("[1/2] Tailscale 已安装并已连接。")
+        else:
+            log("[1/2] Tailscale 已安装，但还没有登录/连接。")
+            log("      请在托盘图标里登录；房主和观看者都需要它在线。")
+    else:
+        log("[1/2] 尚未安装 Tailscale：联机观看需要它；只看本机影片可以先跳过。")
+
+    log("")
+    log("[2/2] 下一步：")
+    log("    1. 双击 WatchParty\\启动.bat 打开 mpv" if IS_WINDOWS
+        else "    1. 双击包内的 启动.command 打开 mpv")
+    log("    2. 按 Ctrl+Shift+S 打开面板，进入「联机」→「运行模式」")
+    log("    3. 选择“房主模式”（共享本机影片）或“观看者模式”（连房主的房间）")
+    log("")
+    log("房主模式会请求一次管理员权限，用于只放行 Tailscale 网段访问本机 5244 端口；")
+    log("观看者模式不开放本机任何端口。")
+    return 0
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="WatchParty 房主向导与网络诊断")
+    global _LOG_TO_STDERR
+    parser = argparse.ArgumentParser(description="WatchParty 向导与网络诊断")
     parser.add_argument("--json", action="store_true", help="输出 JSON（供面板读取）")
     parser.add_argument("--config", default=UI_CONFIG, help="syncplay_ui.conf 路径")
     subparsers = parser.add_subparsers(dest="command")
 
-    full = subparsers.add_parser("full", help="房主首次运行完整向导")
+    full = subparsers.add_parser("full", help="房主模式完整向导")
     full.add_argument("--install-tailscale", action="store_true",
                       help="未安装 Tailscale 时自动打开官方安装器")
 
+    mode_host = subparsers.add_parser(
+        "mode-host", help="从面板一键切换为房主模式（含防火墙规则）")
+    mode_host.add_argument("--install-tailscale", action="store_true",
+                           help="未安装 Tailscale 时自动打开官方安装器")
+
     subparsers.add_parser("ensure-alist", help="仅检查/启动 AList")
+    subparsers.add_parser(
+        "bootstrap", help="合并包首次运行：准备 Tailscale 并给出选择运行模式的指引")
     subparsers.add_parser("configure-alist", help="仅配置签名/guest//media 存储")
     subparsers.add_parser("verify-sharing", help="仅执行匿名+Range 共享自检")
     tailscale = subparsers.add_parser("apply-tailscale", help="仅检测 Tailscale 并写 alist_server")
@@ -1235,31 +1507,67 @@ def main(argv=None):
 
     actions = {
         "full": lambda: run_host_wizard(args.config, args.install_tailscale),
+        "mode-host": lambda: run_mode_host(args.config, args.install_tailscale),
         "ensure-alist": lambda: (ensure_alist(), 0)[1],
+        "bootstrap": lambda: run_bootstrap(args.config),
         "configure-alist": lambda: (configure_alist(), 0)[1],
         "verify-sharing": lambda: (verify_sharing(), 0)[1],
         "apply-tailscale": lambda: run_apply_tailscale(
             args.config, args.install_if_missing),
         "doctor": lambda: run_doctor(args.host, args.media, args.config, args.role),
     }
+
+    # --json 时把 fd 1 整体并到 stderr，这样连子进程的输出也不会污染
+    # stdout；只有最后一行 JSON 走保留下来的原始 fd。
+    saved_stdout_fd = None
+    if args.json:
+        _LOG_TO_STDERR = True
+        try:
+            sys.stdout.flush()
+            saved_stdout_fd = os.dup(1)
+            os.dup2(2, 1)
+        except OSError:
+            saved_stdout_fd = None
+
+    def emit(payload):
+        text = json.dumps(payload, ensure_ascii=True) + "\n"
+        if saved_stdout_fd is not None:
+            os.write(saved_stdout_fd, text.encode("ascii", "replace"))
+        else:
+            print(text, end="", flush=True)
+
     try:
-        code = actions[args.command]() or 0
+        outcome = actions[args.command]()
+        if isinstance(outcome, dict):
+            payload = outcome
+            code = 0 if payload.get("ok") else 1
+        else:
+            code = outcome or 0
+            payload = {"ok": code == 0}
         if args.json:
-            print(json.dumps({"ok": code == 0}, ensure_ascii=True))
+            emit(payload)
+        elif payload.get("error"):
+            log("[WatchParty 设置] %s" % payload["error"])
         return code
     except SetupError as exc:
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True))
+            emit({"ok": False, "error": str(exc)})
         else:
             log("[WatchParty 设置] 出现问题：")
             log(str(exc))
         return 1
     except (OSError, ValueError) as exc:
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True))
+            emit({"ok": False, "error": str(exc)})
         else:
             log("[WatchParty 设置] 出现问题：%s" % exc)
         return 1
+    finally:
+        if saved_stdout_fd is not None:
+            try:
+                os.close(saved_stdout_fd)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

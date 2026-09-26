@@ -284,9 +284,29 @@ class ConfigurationBuilderTests(unittest.TestCase):
         self.assertEqual(configuration, {
             "alist_enabled": "yes",
             "alist_server": "http://%s:5244" % TAILSCALE_IPV4,
+            "alist_root": tailscale.HOST_ALIST_ROOT,
+            "alist_virtual_root": tailscale.HOST_ALIST_VIRTUAL_ROOT,
             "tailscale_mode": "host",
             "tailscale_host": TAILSCALE_IPV4,
         })
+
+    def test_host_configuration_restores_publishing_after_viewer_mode(self):
+        """观看者模式清空 alist_root；切回房主必须重新发布随包 media。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "syncplay_ui.conf")
+            tailscale.update_syncplay_config(
+                path, tailscale.build_viewer_configuration(TAILSCALE_IPV4))
+            self.assertEqual(tailscale.read_syncplay_config(path)["alist_root"], "")
+
+            status = tailscale.extract_status(_status_payload(), "tailscale.exe")
+            tailscale.update_syncplay_config(
+                path, tailscale.build_host_configuration(status))
+
+            values = tailscale.read_syncplay_config(path)
+            self.assertEqual(values["alist_root"], tailscale.HOST_ALIST_ROOT)
+            self.assertEqual(
+                values["alist_virtual_root"], tailscale.HOST_ALIST_VIRTUAL_ROOT)
+            self.assertEqual(values["tailscale_mode"], "host")
 
     def test_viewer_configuration_rejects_magicdns_serve_address(self):
         with self.assertRaises(ValueError):
@@ -321,6 +341,31 @@ class ConfigurationBuilderTests(unittest.TestCase):
             self.assertEqual(values["alist_root"], "")
             self.assertEqual(values["alist_map"], "")
             self.assertEqual(values["tailscale_mode"], "viewer")
+
+    def test_local_configuration_only_disables_sharing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "syncplay_ui.conf")
+            path.write_text(
+                "alist_enabled=yes\n"
+                "alist_server=http://%s:5244\n"
+                "alist_root=~~/../WatchParty/media\n"
+                "alist_map=\n"
+                "tailscale_mode=host\n"
+                "tailscale_host=%s\n" % (TAILSCALE_IPV4, TAILSCALE_IPV4),
+                encoding="utf-8",
+            )
+            configuration = tailscale.configure_local(path)
+
+            self.assertEqual(configuration, {
+                "alist_enabled": "no",
+                "tailscale_mode": "off",
+            })
+            values = tailscale.read_syncplay_config(path)
+            self.assertEqual(values["alist_enabled"], "no")
+            self.assertEqual(values["tailscale_mode"], "off")
+            # 地址保留下来，重新选择模式时不必再问一遍。
+            self.assertEqual(
+                values["alist_server"], "http://%s:5244" % TAILSCALE_IPV4)
 
     def test_host_configuration_requires_running_tailscale_and_ipv4(self):
         invalid_statuses = (
@@ -362,14 +407,13 @@ class BatchFileCompatibilityTests(unittest.TestCase):
 
     def test_batch_helpers_are_utf8_without_bom_and_use_crlf(self):
         relative_paths = (
-            "WatchParty/房主首次运行.bat",
+            "WatchParty/首次运行.bat",
             "WatchParty/启动.bat",
             "WatchParty/Tailscale/configure-host.bat",
+            "WatchParty/Tailscale/configure-host-firewall.bat",
             "WatchParty/Tailscale/configure-viewer.bat",
             "WatchParty/Tailscale/install-tailscale.bat",
             "WatchParty/Tailscale/status.bat",
-            "WatchParty/ViewerPackage/templates/观看者首次运行.bat",
-            "WatchParty/ViewerPackage/templates/启动观看.bat",
         )
         project_root = Path(tailscale.PROJECT_ROOT)
         for relative_path in relative_paths:

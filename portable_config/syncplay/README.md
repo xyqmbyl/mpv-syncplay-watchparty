@@ -7,18 +7,24 @@
 请从 GitHub Release 的 `Assets` 下载完整包，不要下载自动生成的
 `Source code (zip)`：
 
-- 房主下载并完整解压 `MPV-Syncplay-Host.zip`；
-- 观看者下载并完整解压 `MPV-Syncplay-Viewer.zip`。
+- Windows 下载 `WatchParty-Windows-x64.zip`（32 位系统用 `-x86`）；
+- macOS 下载 `WatchParty-macOS-arm64.zip`（Intel 用 `-intel`）。
 
-房主先双击 `WatchParty\房主首次运行.bat`，允许一次 Windows 管理员权限，
-再按提示安装并登录 Tailscale。脚本会自动建立仅允许 Tailscale 网段访问
-5244 的防火墙规则；向导会配置随包 AList、验证匿名 Range 播放，并显示形如
-`http://100.x.x.x:5244` 形式的观看者地址。然后在 Tailscale 管理后台进入
-`Machines`，对房主电脑选择 `Share`，把设备共享邀请和该地址发给观看者。
+两种机器下载的是同一个包：房主和观看者不再分别下载，角色在装好之后于
+mpv 面板里现场选择。
 
-观看者接受邀请后双击 `观看者首次运行.bat`，使用自己的 Tailscale 账号
-登录，并确认房主的完整 `http://100.x.x.x:5244` 地址。观看者向导诊断通过
-后，日常只需运行 `启动观看.bat`；房主日常运行 `WatchParty\启动.bat`。
+房主先双击 `WatchParty\首次运行.bat`（macOS 为包内的 `首次设置.command`），
+允许一次 Windows 管理员权限，再按提示安装并登录 Tailscale。脚本会自动建立
+仅允许 Tailscale 网段访问 5244 的防火墙规则；向导会配置随包 AList、验证匿名
+Range 播放，并显示形如 `http://100.x.x.x:5244` 形式的观看者地址。然后在
+Tailscale 管理后台进入 `Machines`，对房主电脑选择 `Share`，把设备共享邀请和
+该地址发给观看者。
+
+观看者用同一个包解压后，在 mpv 中按 `Ctrl+Shift+S`，进入 `联机`，在二级
+菜单选择 `观看者模式`，按提示使用自己的 Tailscale 账号登录并确认房主的完整
+`http://100.x.x.x:5244` 地址。观看者向导诊断通过后，日常只需运行
+`WatchParty\启动.bat`（macOS 为 `启动.command`）；房主同样用它启动，区别只在
+面板里选择的运行模式。
 
 两边在 mpv 中按 `Ctrl+Shift+S`，填写完全相同的 Syncplay 服务器和房间名，
 再选择“加入 / 连接房间”。建议观看者先连入，房主随后打开
@@ -302,8 +308,8 @@ URL 的发布和加载状态，避免把上一个房间的地址带入新房间�
 ## 使用 Tailscale 连接外地观看者
 
 项目内的 `WatchParty\Tailscale` 已包含经过签名和 SHA-256 校验的官方
-Windows x64 安装包，以及房主/观看者配置入口。详细步骤见该目录的
-`README.md`。
+Tailscale 安装包，以及房主/观看者共用的一键配置入口（面板的
+`联机 -> 运行模式` 会自动调用）。详细步骤见该目录的 `README.md`。
 
 推荐流程是通过 Tailscale 管理后台的 `Machines -> 房主电脑 -> Share` 只
 共享房主设备。观看者使用自己的账号接受邀请，不要共用房主登录。房主首次
@@ -315,8 +321,10 @@ Funnel 会把服务暴露到公网；设备共享则只授权观看者经 Tailsc
 访问房主设备。无需在路由器上开放 5244 端口。
 
 按 `Ctrl+Shift+S` 打开控制面板后，左侧 `Tailscale` 二级栏可查看安装、登录
-和本机 Tailscale IP 状态。首次部署以 `WatchParty\房主首次运行.bat` 和观看者
-包内的 `观看者首次运行.bat` 为准，它们还会完成 AList 共享与可达性诊断。
+和本机 Tailscale IP 状态。首次部署以 `WatchParty\首次运行.bat`（macOS 为
+`首次设置.command`）为准，它还会完成 AList 共享与可达性诊断；之后在
+`联机 -> 运行模式` 里选择 `房主模式` 或 `观看者模式`，面板会调用同一个
+辅助模块完成对应角色的配置。
 
 面板和辅助模块不会读取或保存 Tailscale auth key。媒体地址改变后，正在运行
 的 Syncplay 客户端会停止，重新选择“加入 / 连接房间”即可让严格的 AList

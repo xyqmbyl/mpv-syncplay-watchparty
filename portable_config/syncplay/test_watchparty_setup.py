@@ -5,6 +5,7 @@
 import json
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -664,6 +665,263 @@ class DoctorRoleTests(unittest.TestCase):
             self.assertEqual(setup.run_doctor(role="host"), 38)
         finally:
             _patch(setup, **saved)
+
+
+class HostFirewallTests(unittest.TestCase):
+    """房主防火墙步骤：必须只提权 netsh，并且失败时给出可操作提示。"""
+
+    def _patch_firewall(self, **overrides):
+        defaults = dict(
+            IS_WINDOWS=True,
+            ALIST_EXE=os.path.join("C:", "fake", "alist.exe"),
+            HOST_FIREWALL_SCRIPT=os.path.join("C:", "fake", "configure-host-firewall.bat"),
+            is_admin=lambda: False,
+            elevate_and_wait=lambda target, parameters=None, timeout=900.0: 0,
+            _run_hidden=lambda arguments, timeout=900.0: 0,
+        )
+        defaults.update(overrides)
+        # 两个路径必须"存在"，用临时文件充当。
+        directory = tempfile.mkdtemp()
+        alist = os.path.join(directory, "alist.exe")
+        script = os.path.join(directory, "configure-host-firewall.bat")
+        for path in (alist, script):
+            Path(path).write_text("", encoding="utf-8")
+        defaults["ALIST_EXE"] = alist
+        defaults["HOST_FIREWALL_SCRIPT"] = script
+        return _patch(setup, **defaults)
+
+    def test_non_windows_is_a_noop(self):
+        saved = _patch(setup, IS_WINDOWS=False)
+        try:
+            self.assertEqual(setup.configure_host_firewall(),
+                             {"configured": False, "reason": "unsupported"})
+        finally:
+            _patch(setup, **saved)
+
+    def test_missing_alist_is_reported(self):
+        saved = self._patch_firewall()
+        try:
+            setup.ALIST_EXE = os.path.join(tempfile.mkdtemp(), "alist.exe")
+            with self.assertRaises(setup.SetupError) as context:
+                setup.configure_host_firewall()
+            self.assertIn("AList", str(context.exception))
+        finally:
+            _patch(setup, **saved)
+
+    def test_missing_firewall_script_is_reported(self):
+        saved = self._patch_firewall()
+        try:
+            setup.HOST_FIREWALL_SCRIPT = os.path.join(tempfile.mkdtemp(), "nope.bat")
+            with self.assertRaises(setup.SetupError) as context:
+                setup.configure_host_firewall()
+            self.assertIn("configure-host-firewall.bat", str(context.exception))
+        finally:
+            _patch(setup, **saved)
+
+    def test_admin_runs_netsh_directly_without_prompting(self):
+        prompts = []
+        saved = self._patch_firewall(
+            is_admin=lambda: True,
+            elevate_and_wait=lambda *args, **kwargs: prompts.append(args) or 0,
+        )
+        try:
+            result = setup.configure_host_firewall()
+        finally:
+            _patch(setup, **saved)
+        self.assertEqual(prompts, [])
+        self.assertTrue(result["configured"])
+        self.assertEqual(result["rule"], setup.FIREWALL_RULE_NAME)
+
+    def test_non_admin_elevates_only_the_helper_script(self):
+        elevated = []
+        saved = self._patch_firewall(
+            elevate_and_wait=lambda target, parameters=None, timeout=900.0: (
+                elevated.append(target) or 0),
+        )
+        try:
+            expected = setup.HOST_FIREWALL_SCRIPT
+            result = setup.configure_host_firewall()
+        finally:
+            _patch(setup, **saved)
+        self.assertEqual(elevated, [expected])
+        self.assertTrue(result["configured"])
+
+    def test_cancelled_uac_asks_the_user_to_retry(self):
+        saved = self._patch_firewall(
+            elevate_and_wait=lambda target, parameters=None, timeout=900.0:
+                setup.ELEVATION_CANCELLED,
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as context:
+                setup.configure_host_firewall()
+        finally:
+            _patch(setup, **saved)
+        self.assertIn("取消", str(context.exception))
+        self.assertIn("房主模式", str(context.exception))
+
+    def test_netsh_failure_is_reported_with_exit_code(self):
+        saved = self._patch_firewall(
+            elevate_and_wait=lambda target, parameters=None, timeout=900.0: 1,
+        )
+        try:
+            with self.assertRaises(setup.SetupError) as context:
+                setup.configure_host_firewall()
+        finally:
+            _patch(setup, **saved)
+        self.assertIn("退出码 1", str(context.exception))
+
+
+class ModeHostTests(unittest.TestCase):
+    """mode-host 是面板一键切换房主模式的入口，必须返回稳定的 JSON 字典。"""
+
+    def _run(self, wizard_code, status):
+        calls = []
+
+        def firewall():
+            calls.append("firewall")
+            return {"configured": True, "rule": setup.FIREWALL_RULE_NAME}
+
+        def wizard(config_path, install_if_missing):
+            calls.append("wizard")
+            return wizard_code
+
+        saved = _patch(
+            setup,
+            IS_WINDOWS=True,
+            configure_host_firewall=firewall,
+            run_host_wizard=wizard,
+            tailscale_integration=types.SimpleNamespace(
+                query_status=lambda: status,
+                read_syncplay_config=lambda path: {
+                    "alist_server": "http://100.64.0.9:5244",
+                    "alist_root": "~~/../WatchParty/media",
+                    "alist_virtual_root": "/media",
+                    "tailscale_mode": "host",
+                    "tailscale_host": "100.64.0.9",
+                },
+            ),
+        )
+        try:
+            return setup.run_mode_host("test.conf"), calls
+        finally:
+            _patch(setup, **saved)
+
+    def test_success_publishes_media_and_returns_payload_for_the_panel(self):
+        result, calls = self._run(
+            0, {"installed": True, "online": True, "ipv4": "100.64.0.9"})
+        self.assertEqual(calls, ["firewall", "wizard"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["tailscale_mode"], "host")
+        self.assertEqual(result["alist_server"], "http://100.64.0.9:5244")
+        self.assertEqual(result["alist_root"], "~~/../WatchParty/media")
+        self.assertTrue(result["tailscale_ready"])
+        self.assertIn("Share", result["message"])
+
+    def test_missing_tailscale_keeps_alist_work_and_explains_next_step(self):
+        result, _ = self._run(1, {"installed": False, "online": False, "ipv4": ""})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "tailscale")
+        self.assertIn("安装", result["error"])
+        self.assertIn("alist_server", result)
+
+    def test_not_logged_in_is_distinguished_from_not_installed(self):
+        result, _ = self._run(1, {"installed": True, "online": False, "ipv4": ""})
+        self.assertFalse(result["ok"])
+        self.assertIn("登录", result["error"])
+
+    def test_ready_tailscale_but_failed_doctor_reports_verify_stage(self):
+        result, _ = self._run(
+            1, {"installed": True, "online": True, "ipv4": "100.64.0.9"})
+        self.assertEqual(result["stage"], "verify")
+        self.assertIn("自检", result["error"])
+
+
+class BootstrapTests(unittest.TestCase):
+    """合并包首次运行向导：只准备 Tailscale，角色留给面板选择。"""
+
+    def _run(self, status, windows=True, installer=True):
+        calls = []
+        messages = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "WatchParty")
+            os.makedirs(os.path.join(root, "Tailscale"))
+            if installer:
+                path = os.path.join(root, "Tailscale", "install-tailscale.bat")
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write("@echo off\r\n")
+            saved = _patch(
+                setup,
+                IS_WINDOWS=windows,
+                WATCHPARTY_DIR=root,
+                _safe_tailscale_status=lambda: status,
+                log=messages.append,
+                subprocess=types.SimpleNamespace(
+                    run=lambda *args, **kwargs: (
+                        calls.append(args),
+                        types.SimpleNamespace(returncode=0))[1]),
+            )
+            try:
+                code = setup.run_bootstrap("test.conf")
+            finally:
+                _patch(setup, **saved)
+        return code, calls, "\n".join(messages)
+
+    def test_missing_tailscale_opens_the_official_installer(self):
+        code, calls, text = self._run({"installed": False, "online": False, "ipv4": ""})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("install-tailscale.bat", calls[0][0][2])
+        self.assertIn("运行模式", text)
+
+    def test_installed_and_connected_never_launches_an_installer(self):
+        code, calls, text = self._run(
+            {"installed": True, "online": True, "ipv4": "100.64.0.9"})
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("已连接", text)
+        self.assertNotIn("安装器", text)
+
+    def test_logged_out_tailscale_is_reported_without_installing(self):
+        _code, calls, text = self._run(
+            {"installed": True, "online": False, "ipv4": ""})
+        self.assertEqual(calls, [])
+        self.assertIn("登录", text)
+
+
+class JsonStandardOutputTests(unittest.TestCase):
+    """mpv 面板直接解析 stdout，任何进度日志都不允许混进去。"""
+
+    def _run_cli(self, arguments):
+        script = os.path.join(
+            os.path.dirname(os.path.abspath(setup.__file__)), "watchparty_setup.py")
+        return subprocess.run(
+            [sys.executable, script] + arguments,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=300, check=False)
+
+    def test_progress_logs_go_to_stderr_not_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            completed = self._run_cli([
+                "--json",
+                "--config", os.path.join(directory, "syncplay_ui.conf"),
+                "doctor", "--role", "viewer",
+            ])
+
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, completed.stdout)
+        self.assertFalse(json.loads(lines[0])["ok"])
+        # 人读报告必须全都落到 stderr，面板才不会解析失败。
+        self.assertTrue(completed.stderr.strip())
+
+    def test_setup_error_is_reported_as_one_json_line(self):
+        completed = self._run_cli(["--json", "verify-sharing"])
+
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, completed.stdout)
+        payload = json.loads(lines[0])
+        self.assertFalse(payload["ok"])
+        self.assertIn("error", payload)
 
 
 if __name__ == "__main__":
