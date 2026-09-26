@@ -26,6 +26,12 @@
   `ModuleNotFoundError`/`ImportError` 崩溃（首次运行向导、观看者模式与仅本机
   观看不受影响）。构建脚本改为通配携带源运行时的全部 `.pyd` 与 `libffi-8.dll`，
   并把 `import ctypes` 纳入构建自检，防止再漏带扩展模块。
+- 修复随包 AList 启动失败时错误提示本身崩溃的问题：`ensure_alist` 的报错
+  文案格式化参数顺序放错，会把 `TypeError` 堆栈甩给面板，用户看不到真实原因。
+  现在 AList 的启动输出会落到 `WatchParty/alist/data/log/server-stdout.log`，
+  启动失败时提示附带退出码与最近输出；macOS 上启动前还会自动清除 AList 的
+  隔离标记（兜底直接双击 mpv.app、没走 `.command` 入口的场景），面板调用
+  的设置脚本遇到未预期异常时也改为回传 JSON 错误而不是 Python 堆栈。
 
 ## 0.4.3 - 2026-09-25
 

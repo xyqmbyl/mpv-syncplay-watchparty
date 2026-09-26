@@ -385,15 +385,24 @@ def alist_ping(base_url, timeout=4.0):
 
 
 def start_alist_process():
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return subprocess.Popen(
-        [ALIST_EXE, "server", "--force-bin-dir"],
-        cwd=ALIST_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=flags,
-        close_fds=True,
-    )
+    # stdout/stderr 落到 data/log/server-stdout.log：wait_for_alist 失败时只
+    # 知道"没就绪"，把 AList 的真实退出原因（端口、配置、被系统拦截等）留在
+    # 文件里才能继续排查。
+    log_dir = os.path.join(ALIST_DIR, "data", "log")
+    os.makedirs(log_dir, exist_ok=True)
+    server_log = open(os.path.join(log_dir, "server-stdout.log"), "ab")
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return subprocess.Popen(
+            [ALIST_EXE, "server", "--force-bin-dir"],
+            cwd=ALIST_DIR,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            creationflags=flags,
+            close_fds=True,
+        )
+    finally:
+        server_log.close()
 
 
 def wait_for_alist(timeout=STARTUP_TIMEOUT):
@@ -413,6 +422,23 @@ def stop_alist_process(process):
         process.kill()
 
 
+def _read_server_output_tail(limit=400):
+    """读取随包 AList 最近一次启动输出的结尾，拼进错误提示帮助定位。"""
+    path = os.path.join(ALIST_DIR, "data", "log", "server-stdout.log")
+    try:
+        with open(path, "rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 4096))
+            text = stream.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    text = " ".join(text.split())[-limit:]
+    if not text:
+        return ""
+    return "最近输出：%s" % text
+
+
 def run_alist_admin(arguments, timeout=30.0):
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.run(
@@ -427,6 +453,29 @@ def run_alist_admin(arguments, timeout=30.0):
         creationflags=flags,
         check=False,
     )
+
+
+def clear_macos_quarantine():
+    """清掉随包 AList 的 macOS 隔离标记（best-effort）。
+
+    浏览器下载的 ZIP 解压后所有文件都带 com.apple.quarantine，未公证的
+    alist 会被 Gatekeeper 直接杀掉，表现为"启动失败：45 秒内未就绪"。
+    首次设置.command / 启动.command 的入口已递归清除过；这里兜底覆盖
+    用户直接双击 mpv.app、没经过 .command 的场景。
+    """
+    if IS_WINDOWS or not os.path.isfile(ALIST_EXE):
+        return
+    xattr = "/usr/bin/xattr"
+    if not os.path.isfile(xattr):
+        return
+    try:
+        subprocess.run(
+            [xattr, "-r", "-d", "com.apple.quarantine", ALIST_DIR],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("提示：清除 AList 隔离标记失败（%s），若启动失败请手动执行 "
+            "xattr -cr <包目录>。" % exc)
 
 
 def ensure_alist():
@@ -474,12 +523,17 @@ def ensure_alist():
         ensure_admin_password()
 
     log("正在启动随包 AList ...")
+    clear_macos_quarantine()
     process = start_alist_process()
     if not wait_for_alist():
         stop_alist_process(process)
+        exit_code = process.poll()
+        exit_note = "" if exit_code is None else "（进程已退出，退出码 %s）" % exit_code
         raise SetupError(
-            "AList 启动失败：%.0f 秒内未在 127.0.0.1:%d 就绪。\n"
-            "请查看 %s 排查。" % (ui_path("WatchParty/alist/data/log/log.log"), STARTUP_TIMEOUT, ALIST_PORT))
+            "AList 启动失败：%.0f 秒内未在 127.0.0.1:%d 就绪。%s%s\n"
+            "请查看 %s 排查。" % (
+                STARTUP_TIMEOUT, ALIST_PORT, exit_note, _read_server_output_tail(),
+                ui_path("WatchParty/alist/data/log/")))
     log("AList 已启动：http://127.0.0.1:%d" % ALIST_PORT)
     return local, True
 
@@ -1563,6 +1617,12 @@ def main(argv=None):
             emit({"ok": False, "error": str(exc)})
         else:
             log("[WatchParty 设置] 出现问题：%s" % exc)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - 面板需要稳定的 JSON，而不是堆栈
+        if args.json:
+            emit({"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
+        else:
+            log("[WatchParty 设置] 出现问题：%s: %s" % (type(exc).__name__, exc))
         return 1
     finally:
         if saved_stdout_fd is not None:
