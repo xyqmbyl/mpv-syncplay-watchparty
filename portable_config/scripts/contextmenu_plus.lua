@@ -503,6 +503,335 @@ local function update_profiles_menu(menu)
     end
 end
 
+------------------------------------------------------------------------
+-- 日志菜单：打开日志文件夹 / 自动清理 / 清理周期 / 立即清理
+--
+-- 设置持久化在 portable_config/script-opts/log_menu.conf，由本脚本直接
+-- 读写（不依赖 mp.options 的写回能力，mpv 不同版本的实现并不一致）。
+-- 清理工作交给便携 Python 助手 syncplay/log_maintenance.py，Lua 只做
+-- 触发与展示；助手失败时返回单行 JSON（ok=false），不会抛 traceback。
+------------------------------------------------------------------------
+
+local log_conf_path = '~~/script-opts/log_menu.conf'
+local log_dir_path = '~~/../logs'
+local log_helper_path = '~~/syncplay/log_maintenance.py'
+local log_python_path = '~~/../python.exe'
+local log_marker_name = '.last-clean'
+local log_retention_choices = {7, 14, 30, 60, 90}
+local LOG_HELPER_TIMEOUT = 30
+
+-- log_menu.conf 的键（enabled=yes|no / retention_days=N）
+local log_enabled = true
+local log_retention_days = 30
+
+-- 展开 mpv 路径；失败返回 nil（裸 '~~' 不解析，必须写成 '~~/..'）
+local function log_expand(path)
+    local ok, res = pcall(mp.command_native, {'expand-path', path})
+    if ok and type(res) == 'string' and res ~= '' then return res end
+    return nil
+end
+
+local function log_notify(text, seconds)
+    pcall(mp.osd_message, text, seconds or 3)
+end
+
+-- 容错版 pcall：任何异常都吞掉并返回 false，避免脚本被 mpv 终止
+local function log_try(fn, ...)
+    local ok, res = pcall(fn, ...)
+    if ok then return true, res end
+    msg.verbose('log menu: ' .. tostring(res))
+    return false, res
+end
+
+-- 读取设置：只认 key=value，其余行（注释等）忽略
+local function log_read_conf()
+    local path = log_expand(log_conf_path)
+    if not path then return false end
+    local fh = io.open(path, 'r')
+    if not fh then return false end
+    local text = fh:read('*a')
+    fh:close()
+    if not text then return false end
+    for line in text:gmatch('[^\r\n]+') do
+        local key, value = line:match('^%s*([%w_]+)%s*=%s*(.-)%s*$')
+        if key == 'enabled' then
+            local flag = value:lower()
+            log_enabled = (flag == 'yes' or flag == 'true' or flag == '1')
+        elseif key == 'retention_days' then
+            local days = tonumber(value)
+            if days and days > 0 then log_retention_days = math.floor(days) end
+        end
+    end
+    return true
+end
+
+-- 写回设置：整文件重写，但保留无关行（注释/未来键），并补齐缺失的键
+local function log_write_conf()
+    local path = log_expand(log_conf_path)
+    if not path then return false end
+    local lines, seen_enabled, seen_days = {}, false, false
+    local fh = io.open(path, 'r')
+    if fh then
+        for line in fh:lines() do
+            local key = line:match('^%s*([%w_]+)%s*=')
+            if key == 'enabled' then
+                seen_enabled = true
+                lines[#lines + 1] = 'enabled=' .. (log_enabled and 'yes' or 'no')
+            elseif key == 'retention_days' then
+                seen_days = true
+                lines[#lines + 1] = 'retention_days=' .. tostring(log_retention_days)
+            else
+                lines[#lines + 1] = line
+            end
+        end
+        fh:close()
+    end
+    if not seen_enabled then
+        lines[#lines + 1] = 'enabled=' .. (log_enabled and 'yes' or 'no')
+    end
+    if not seen_days then
+        lines[#lines + 1] = 'retention_days=' .. tostring(log_retention_days)
+    end
+    local out = io.open(path, 'w')
+    if not out then return false end
+    out:write(table.concat(lines, '\n') .. '\n')
+    out:close()
+    return true
+end
+
+-- 切换后让菜单在下一个 idle 重新构建（拿到 root.state 勾选态）
+local function log_refresh_menu()
+    local menu = keyword_to_menu['log']
+    if not menu then return end
+    menu.dirty = true
+    have_dirty_menus = true
+end
+
+local function log_format_size(bytes)
+    local size = tonumber(bytes) or 0
+    if size >= 1048576 then return string.format('%.1f MB', size / 1048576) end
+    if size >= 1024 then return string.format('%.1f KB', size / 1024) end
+    return string.format('%d B', size)
+end
+
+-- 异步调用 Python 助手（照 syncplay_ui.lua 的 command_native_async + 看门狗写法）。
+-- on_done(success, result, error)，成功时 result.stdout 是单行 JSON。
+local function log_run_helper(extra_args, on_done)
+    local python = log_expand(log_python_path)
+    local helper = log_expand(log_helper_path)
+    local dir = log_expand(log_dir_path)
+    if not (python and helper and dir) then
+        if on_done then on_done(false, nil, 'helper path unresolved') end
+        return false
+    end
+
+    local args = {python, '-X', 'utf8', '-I', '-B', helper}
+    for _, value in ipairs(extra_args) do args[#args + 1] = value end
+    args[#args + 1] = '--dir'
+    args[#args + 1] = dir
+
+    local finished = false
+    local watchdog = nil
+    local handle = nil
+    local ok, err = pcall(function()
+        handle = mp.command_native_async({
+            name = 'subprocess',
+            args = args,
+            capture_stdout = true,
+            capture_stderr = true,
+            playback_only = false,
+        }, function(success, result, error)
+            if finished then return end
+            finished = true
+            if watchdog then watchdog:kill() end
+            if on_done then on_done(success, result, error) end
+        end)
+    end)
+    if not ok or not handle then
+        finished = true
+        if on_done then on_done(false, nil, tostring(err or 'spawn failed')) end
+        return false
+    end
+
+    watchdog = mp.add_timeout(LOG_HELPER_TIMEOUT, function()
+        if finished then return end
+        finished = true
+        log_try(mp.abort_async_command, handle)
+        log_notify('日志清理超时，已中止', 4)
+    end)
+    return true
+end
+
+-- 清理一次。silent=true 时只提示失败（启动时用），after 在成功后被调用
+local function log_clean(silent, after)
+    log_run_helper({'clean', '--days', tostring(log_retention_days), '--json'},
+        function(success, result)
+            local payload = nil
+            if success and type(result) == 'table' and result.stdout then
+                local ok, parsed = log_try(utils.parse_json, result.stdout)
+                if ok and type(parsed) == 'table' then payload = parsed end
+            end
+            if not payload then
+                if not silent then log_notify('清理失败：日志助手没有返回有效结果', 5) end
+                return
+            end
+            if payload.ok then
+                if after then after(payload) end
+                if not silent then
+                    log_notify(string.format('清理完成：删除 %d 个文件，释放 %s',
+                        tonumber(payload.removed) or 0,
+                        log_format_size(payload.freed_bytes)), 4)
+                end
+            elseif not silent then
+                log_notify('清理失败：' .. tostring(payload.error or '未知错误'), 5)
+            end
+        end)
+end
+
+-- 动作：打开日志文件夹
+local function log_open_dir()
+    local dir = log_expand(log_dir_path)
+    if not dir then
+        log_notify('日志目录不可用', 4)
+        return
+    end
+    local platform = mp.get_property_native('platform')
+    local command
+    if platform == 'macos' then
+        command = {'open', dir}
+    elseif platform == 'linux' then
+        command = {'xdg-open', dir}
+    else
+        command = {'explorer.exe', dir}
+    end
+    local ok, res = log_try(mp.command_native, {
+        name = 'subprocess',
+        args = command,
+        playback_only = false,
+    })
+    if not ok or type(res) ~= 'table' then
+        log_notify('无法打开日志文件夹：' .. dir, 5)
+    end
+end
+
+-- 目录存在性兜底：助手 ensure-dir 不可用时（例如 Python 暂缺）直接建目录。
+-- 实测 mpv 0.40 的 mp.utils 没有 mkdir_p，只能用 os.execute 调平台命令。
+-- 没有目录时 mpv 会接受 log-file 却打不开文件，只往 stderr 报一行错，所以必须自查。
+local function log_ensure_dir_sync()
+    local dir = log_expand(log_dir_path)
+    if not dir then return nil end
+    local info = utils.file_info(dir)
+    if info and info.is_dir then return dir end
+    -- 平台判断缺失时按 windows 处理（与 log_open_dir 一致）
+    local platform = mp.get_property_native('platform') or 'windows'
+    if platform == 'windows' then
+        -- cmd 的 mkdir 会连带创建中间目录
+        log_try(os.execute, 'mkdir "' .. dir .. '" 2>nul')
+    else
+        log_try(os.execute, 'mkdir -p "' .. dir .. '" 2>/dev/null')
+    end
+    info = utils.file_info(dir)
+    if info and info.is_dir then return dir end
+    return nil
+end
+
+-- 把 mpv 自身日志指向 logs/mpv-<会话时间戳>.log；enabled=no 时关闭文件日志。
+-- 文件名必须带会话时间戳：mpv 对同一路径是截断而非追加，固定名字会覆盖上一次会话。
+local function log_apply_log_file()
+    if not log_enabled then
+        pcall(mp.set_property, 'log-file', '')
+        return
+    end
+    local dir = log_ensure_dir_sync()
+    if not dir then
+        log_notify('无法启用 mpv 日志文件：日志目录不可用', 5)
+        msg.warn('log menu: logs dir unavailable')
+        return
+    end
+    local log_file = utils.join_path(dir, string.format('mpv-%s.log', os.date('%Y%m%d-%H%M%S')))
+    local ok, res = log_try(mp.set_property, 'log-file', log_file)
+    if not ok or res == false then
+        log_notify('无法启用 mpv 日志文件：' .. log_file, 5)
+        msg.warn('log menu: set log-file failed: ' .. tostring(res))
+        return
+    end
+    -- mpv 即使打不开文件也会让属性读回成功，只能稍后实测文件是否真的落盘
+    mp.add_timeout(0.5, function()
+        if not utils.file_info(log_file) then
+            log_notify('mpv 日志文件未能创建：' .. log_file, 6)
+            msg.warn('log menu: log file not created: ' .. log_file)
+        end
+    end)
+end
+
+-- 动作：切换记录日志 / 自动清理开关
+local function log_toggle_auto()
+    log_read_conf()
+    log_enabled = not log_enabled
+    if log_write_conf() then
+        log_notify(log_enabled and '日志记录已开启' or '日志记录已关闭', 3)
+    else
+        log_notify('设置保存失败（log_menu.conf 不可写）', 4)
+    end
+    log_apply_log_file()
+    log_refresh_menu()
+end
+
+-- 动作：设置清理周期
+local function log_set_days(days)
+    local value = tonumber(days)
+    if not value or value <= 0 then
+        log_notify('清理周期参数无效', 3)
+        return
+    end
+    log_retention_days = math.floor(value)
+    if log_write_conf() then
+        log_notify(string.format('清理周期已设为 %d 天', log_retention_days), 3)
+    else
+        log_notify('设置保存失败（log_menu.conf 不可写）', 4)
+    end
+    log_refresh_menu()
+end
+
+-- handle #@log menu update
+local function update_log_menu(menu)
+    local submenu = to_submenu(menu.item)
+    log_read_conf()
+
+    append_menu(submenu, {
+        title = '📂 打开日志文件夹',
+        cmd = 'script-message log-menu-open-dir',
+    })
+
+    local auto = {
+        title = '🧹 自动清理',
+        cmd = 'script-message log-menu-toggle-auto',
+    }
+    if log_enabled then auto.state = {'checked'} end
+    append_menu(submenu, auto)
+
+    local period = {
+        title = string.format('🗓 清理周期（%d 天）', log_retention_days),
+        cmd = 'ignore',
+        type = 'submenu',
+        submenu = {},
+    }
+    for _, days in ipairs(log_retention_choices) do
+        local choice = {
+            title = string.format('%d 天', days),
+            cmd = string.format('script-message log-menu-set-days %d', days),
+        }
+        if days == log_retention_days then choice.state = {'checked'} end
+        append_menu(period.submenu, choice)
+    end
+    append_menu(submenu, period)
+
+    append_menu(submenu, {
+        title = '🧹 立即清理一次',
+        cmd = 'script-message log-menu-clean-now',
+    })
+end
+
 -- handle menu state update
 local function update_menu_state(menu)
     if not menu.state then return end
@@ -532,6 +861,7 @@ local dyn_updaters = {
     ['audio-devices'] = update_audio_devices_menu,
     ['playlist'] = update_playlist_menu,
     ['profiles'] = update_profiles_menu,
+    ['log'] = update_log_menu,
 }
 
 -- handle dynamic menu update
@@ -785,3 +1115,82 @@ if conf then
     menu_items_dirty = true
     load_dyn_menus()
 end
+
+------------------------------------------------------------------------
+-- 日志菜单：消息入口与启动初始化
+--
+-- 启动流程（全部容错，失败只提示，绝不抛错）：
+--   1. 同步 ensure-dir 建日志目录（可阻塞 100-300ms，故只做一次）
+--   2. 把 mpv 自己的日志指向 logs/mpv-<时间戳>.log
+--      —— 文件名必须带会话时间戳：mpv 对同一路径是截断而非追加
+--   3. 若开启自动清理且上次清理不是今天，异步跑一次 clean
+------------------------------------------------------------------------
+
+mp.register_script_message('log-menu-open-dir', function()
+    log_open_dir()
+end)
+
+mp.register_script_message('log-menu-toggle-auto', function()
+    log_toggle_auto()
+end)
+
+mp.register_script_message('log-menu-set-days', function(days)
+    log_set_days(days)
+end)
+
+mp.register_script_message('log-menu-clean-now', function()
+    log_clean(false)
+end)
+
+-- 读 .last-clean 里的日期（YYYY-MM-DD），读不到返回 nil
+local function log_last_clean_date()
+    local dir = log_expand(log_dir_path)
+    if not dir then return nil end
+    local fh = io.open(utils.join_path(dir, log_marker_name), 'r')
+    if not fh then return nil end
+    local text = fh:read('*l')
+    fh:close()
+    if type(text) ~= 'string' then return nil end
+    return text:match('(%d%d%d%d%-%d%d%-%d%d)')
+end
+
+local function log_write_marker(date)
+    local dir = log_expand(log_dir_path)
+    if not dir then return end
+    local fh = io.open(utils.join_path(dir, log_marker_name), 'w')
+    if not fh then return end
+    fh:write(date, '\n')
+    fh:close()
+end
+
+local function log_startup()
+    log_read_conf()
+
+    local dir = log_expand(log_dir_path)
+    local python = log_expand(log_python_path)
+    local helper = log_expand(log_helper_path)
+
+    -- 1. 确保日志目录存在（同步，可为后续写日志兜底）
+    if dir and python and helper then
+        log_try(mp.command_native, {
+            name = 'subprocess',
+            args = {python, '-X', 'utf8', '-I', '-B', helper, 'ensure-dir', '--dir', dir},
+            capture_stdout = true,
+            capture_stderr = true,
+            playback_only = false,
+        })
+    end
+
+    -- 2. mpv 自身日志（仅 enabled=yes；每个会话一个文件，避免被截断覆盖）
+    log_apply_log_file()
+
+    -- 3. 自动清理：每天最多一次，日期记在 logs/.last-clean
+    if not log_enabled then return end
+    local today = os.date('%Y-%m-%d')
+    if log_last_clean_date() == today then return end
+    log_clean(true, function()
+        log_write_marker(today)
+    end)
+end
+
+log_try(log_startup)

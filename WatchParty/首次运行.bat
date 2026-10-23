@@ -1,32 +1,47 @@
 @echo off
+rem ×¢Òâ£º±¾ÎÄ¼ş±ØĞë±£´æÎª GBK/ANSI£¨zh-CN£©±àÂë£¬²»Òª¸Ä´æ UTF-8£¡
+rem Win11 24H2+ ÉÏ cmd ½âÎöº¬¶à×Ö½Ú UTF-8 µÄÅú´¦Àí»á´íÎ»£¨±íÏÖÎª¡°Óï·¨´íÎó¡±
+rem ºó´°¿ÚÒ»ÉÁ¶ø¹ı£©£¬UTF-8+chcp 65001 ·½°¸ÒÑ²»¿ÉÓÃ£¬¹Ê±¾ÎÄ¼şÓÃ GBK ÇÒ²» chcp¡£
+rem ¿ØÖÆÌ¨Ä¬ÈÏ¾ÍÊÇ cp936£¬ÖĞÎÄÕı³£ÏÔÊ¾£»Python Êä³ö×ß WriteConsoleW ²»ÊÜÓ°Ïì£¬
+rem ¹ÜµÀÀïµÄ --json Êä³öÈÔÓÉ PYTHONIOENCODING=utf-8 ±£Ö¤Îª UTF-8¡£
 setlocal DisableDelayedExpansion
-chcp 65001 >nul
 set "PYTHONIOENCODING=utf-8"
-title WatchParty é¦–æ¬¡è¿è¡Œ
+title WatchParty Ê×´ÎÔËĞĞ
 cd /d "%~dp0.." || exit /b 1
 set "WP_PYTHON=%CD%\python.exe"
 set "WP_SCRIPT=%CD%\portable_config\syncplay\watchparty_setup.py"
 
+rem Æô¶¯Æ÷ÈÕÖ¾£ºÓë Æô¶¯.bat ¹²ÓÃ logs\launcher.log£¬×·¼Ó¶ø²»ÊÇ¸²¸Ç£¬±ãÓÚÊÂºó
+rem ¶ÔÕÕ¡£Ä¿Â¼²»´æÔÚ¾Í´´½¨£»ÈÎºÎĞ´ÈëÊ§°Ü¶¼²»¸Ä±äÏÂÃæµÄ½»»¥¡¢ÌáÊ¾ºÍÍË³öÂë¡£
+set "WP_LOGS=%CD%\logs"
+if not exist "%WP_LOGS%" mkdir "%WP_LOGS%" >nul 2>nul
+if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(===== %DATE% %TIME% Ê×´ÎÔËĞĞ.bat =====
+if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo("¹¤×÷Ä¿Â¼ %CD%"
+
 if not exist "%WP_PYTHON%" (
-    echo æœªæ‰¾åˆ°å†…ç½® Pythonï¼Œå®‰è£…åŒ…å¯èƒ½ä¸å®Œæ•´ã€‚
+    if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(ÕÒ²»µ½ÄÚÖÃ Python£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
+    echo Î´ÕÒµ½ÄÚÖÃ Python£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
     pause
     exit /b 1
 )
 if not exist "%WP_SCRIPT%" (
-    echo æœªæ‰¾åˆ° watchparty_setup.pyï¼Œå®‰è£…åŒ…å¯èƒ½ä¸å®Œæ•´ã€‚
+    if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(ÕÒ²»µ½ watchparty_setup.py£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
+    echo Î´ÕÒµ½ watchparty_setup.py£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
     pause
     exit /b 1
 )
 
-rem åˆå¹¶åŒ…ä¸é¢„è®¾è§’è‰²ï¼šæœ¬å‘å¯¼åªå‡†å¤‡è”æœºæ‰€éœ€çš„ Tailscaleï¼Œæˆ¿ä¸»è¿˜æ˜¯è§‚çœ‹è€…
-rem åœ¨ mpv é¢æ¿çš„ã€Œè”æœº -^> è¿è¡Œæ¨¡å¼ã€é‡Œé€‰æ‹©ã€‚
+rem ºÏ²¢°ü²»Ô¤Éè½ÇÉ«£º±¾Ïòµ¼Ö»×¼±¸Áª»úËùĞèµÄ Tailscale£¬·¿Ö÷»¹ÊÇ¹Û¿´Õß
+rem ÔÚ mpv Ãæ°åµÄ¡¸Áª»ú -^> ÔËĞĞÄ£Ê½¡¹ÀïÑ¡Ôñ¡£
 "%WP_PYTHON%" "%WP_SCRIPT%" bootstrap
 set "WP_RESULT=%ERRORLEVEL%"
 echo.
 if not "%WP_RESULT%"=="0" (
-    echo é¦–æ¬¡è¿è¡Œæ£€æŸ¥æœªå®Œæˆï¼Œè¯·æŒ‰ä¸Šé¢çš„æç¤ºå¤„ç†åé‡æ–°åŒå‡»æœ¬æ–‡ä»¶ã€‚
+    if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(bootstrap Î´Íê³É£¬ÍË³öÂë %WP_RESULT%
+    echo Ê×´ÎÔËĞĞ¼ì²éÎ´Íê³É£¬Çë°´ÉÏÃæµÄÌáÊ¾´¦ÀíºóÖØĞÂË«»÷±¾ÎÄ¼ş¡£
 ) else (
-    echo æç¤ºï¼šä»¥åæ—¥å¸¸ä½¿ç”¨åªéœ€åŒå‡» WatchParty\å¯åŠ¨.batã€‚
+    if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(bootstrap Íê³É
+    echo ÌáÊ¾£ºÒÔºóÈÕ³£Ê¹ÓÃÖ»ĞèË«»÷ WatchParty\Æô¶¯.bat¡£
 )
 pause
 exit /b %WP_RESULT%

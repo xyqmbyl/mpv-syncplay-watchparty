@@ -69,8 +69,13 @@ repo-latest/
 
 1. **语言与文案**：文档、UI 提示、诊断信息用简体中文，面向普通用户；
    代码标识符与命令保持英文。诊断信息要给出可执行的下一步动作。
-2. **编码**：`.bat` 一律 UTF-8 无 BOM + CRLF，开头 `chcp 65001`，注意
-   `!` 延迟展开兼容；Python 输出显式 UTF-8；shell 脚本 LF。
+2. **编码**：`.bat` 一律 **GBK/ANSI（zh-CN）无 BOM + CRLF，不写 `chcp 65001`**，
+   注意 `!` 延迟展开兼容。原因：Win11 24H2+ 的 cmd 解析含多字节 UTF-8 的批处理
+   会错位（表现为 `语法错误` 后窗口一闪而过），UTF-8 + `chcp 65001` 方案已不可用；
+   控制台默认 cp936，中文正常显示。Python 输出显式 UTF-8；管道里的 `--json`
+   输出由 `PYTHONIOENCODING=utf-8` 保证为 UTF-8；shell 脚本 LF。
+   （本条于 2026-10 按用户裁决由「.bat 用 UTF-8 无 BOM + `chcp 65001`」改为现状，
+   详见 `docs/RELEASES.md`。）
 3. **UI 基线**：v0.3.0 定制 uosc 共 29 个文件，SHA-256 被
    `test_ui_baseline.py` 钉住。改动 UI 必须是有意行为，并同步更新基线测试。
    `portable_config/scripts/uosc/` 与 `fonts/` 是构建期合并的上游工件，不提交。

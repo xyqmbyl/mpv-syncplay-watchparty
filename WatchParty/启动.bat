@@ -1,16 +1,26 @@
 @echo off
+rem ×¢Òâ£º±¾ÎÄ¼þ±ØÐë±£´æÎª GBK/ANSI£¨zh-CN£©±àÂë£¬²»Òª¸Ä´æ UTF-8£¡
+rem Win11 24H2+ ÉÏ cmd ½âÎöº¬¶à×Ö½Ú UTF-8 µÄÅú´¦Àí»á´íÎ»£¨Ïê¼û Ê×´ÎÔËÐÐ.bat£©¡£
 setlocal DisableDelayedExpansion
-chcp 65001 >nul
-title WatchParty å¯åŠ¨
+title WatchParty Æô¶¯
 cd /d "%~dp0.." || exit /b 1
 
+rem Æô¶¯Æ÷ÈÕÖ¾£ºÃ¿´ÎË«»÷¶¼Íù logs\launcher.log ×·¼ÓÒ»¶Î´øÊ±¼ä´ÁµÄ¼ÇÂ¼£¬·½±ãÅÅ²é
+rem ¡¸Ë«»÷Ã»·´Ó¦¡¹¡£Ä¿Â¼²»´æÔÚ¾Í´´½¨£»ÈÎºÎÐ´ÈëÊ§°Ü¶¼²»Ó°ÏìÏÂÃæµÄÆô¶¯Á÷³ÌºÍÍË³öÂë¡£
+set "WP_LOGS=%CD%\logs"
+if not exist "%WP_LOGS%" mkdir "%WP_LOGS%" >nul 2>nul
+if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(===== %DATE% %TIME% Æô¶¯.bat =====
+if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo("¹¤×÷Ä¿Â¼ %CD%"
+
 if not exist "%CD%\mpv.exe" (
-    echo æœªæ‰¾åˆ° mpv.exeï¼Œå®‰è£…åŒ…å¯èƒ½ä¸å®Œæ•´ã€‚
+    if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(ÕÒ²»µ½ mpv.exe£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
+    echo Î´ÕÒµ½ mpv.exe£¬°²×°°ü¿ÉÄÜ²»ÍêÕû¡£
     pause
     exit /b 1
 )
 
-rem æ—¥å¸¸å¯åŠ¨åªæ‰“å¼€ mpvï¼šè§’è‰²ä¸ŽéšåŒ… AList éƒ½ç”±é¢æ¿ç®¡ç†ã€‚æˆ¿ä¸»æ¨¡å¼ä¸‹ mpv
-rem ä¼šè‡ªåŠ¨æ‹‰èµ· AListï¼›è§‚çœ‹è€…ä¸ä¼šåœ¨æœ¬æœºè¿è¡Œ AListï¼Œä¹Ÿä¸ä¼šå¼€æ”¾ä»»ä½•ç«¯å£ã€‚
+rem ÈÕ³£Æô¶¯Ö»´ò¿ª mpv£º½ÇÉ«ÓëËæ°ü AList ¶¼ÓÉÃæ°å¹ÜÀí¡£·¿Ö÷Ä£Ê½ÏÂ mpv
+rem »á×Ô¶¯À­Æð AList£»¹Û¿´Õß²»»áÔÚ±¾»úÔËÐÐ AList£¬Ò²²»»á¿ª·ÅÈÎºÎ¶Ë¿Ú¡£
+if exist "%WP_LOGS%\" >>"%WP_LOGS%\launcher.log" echo(Æô¶¯ mpv.exe
 start "mpv" "%CD%\mpv.exe" --idle=yes --force-window=yes
 exit /b 0

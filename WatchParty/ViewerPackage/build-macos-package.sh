@@ -219,7 +219,8 @@ ZIGGY_SRC="$UOSC_BIN/ziggy-darwin"
 
 # 4. 项目文件。
 for f in mpv_syncplay.py media_provider.py alist_diagnostics.py \
-         tailscale_integration.py watchparty_setup.py; do
+         tailscale_integration.py watchparty_setup.py log_maintenance.py \
+         log_redact.py; do
     cp "$REPO_ROOT/portable_config/syncplay/$f" "$STAGE/portable_config/syncplay/$f"
 done
 cp "$REPO_ROOT/portable_config/scripts/syncplay_ui.lua" \
@@ -238,6 +239,8 @@ for f in input_uosc.conf input_contextmenu_plus.conf profiles.conf; do
 done
 cp "$REPO_ROOT/portable_config/script-opts/mpv360.conf" \
     "$STAGE/portable_config/script-opts/mpv360.conf"
+cp "$REPO_ROOT/portable_config/script-opts/log_menu.conf" \
+    "$STAGE/portable_config/script-opts/log_menu.conf"
 
 # 着色器资源：mpv.conf 里自动加载的 glsl-shaders-append / vf-pre 已按要求注释，
 # 包里不会自动启用任何滤镜；但快捷键 Ctrl+1..9、Ctrl+0、Ctrl+` 与 mpv360

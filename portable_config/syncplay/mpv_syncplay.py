@@ -48,6 +48,12 @@ except ImportError:
                                    probe_media_url)
     from media_provider import MediaProvider
 
+try:
+    from .log_redact import redact
+except ImportError:
+    # 与上面同理：便携 ._pth 隔离模式下补脚本目录后按普通模块导入。
+    from log_redact import redact
+
 # ---------- 与官方 constants.py 对齐的同步参数 ----------
 PROTOCOL_VERSION = "1.7.7"
 REWIND_THRESHOLD = 4.0          # 超前房间超过该秒数 → 回退对齐
@@ -63,11 +69,72 @@ MAX_PROTOCOL_MESSAGE = 4 * 1024 * 1024
 MAX_FILENAME_LENGTH = 250
 MAX_IDENTITY_LENGTH = 128
 
+# 日志轮转上限：用户选择「保留 3 份 × 每份 2 MB」是为了够排查多次会话
+# 的问题、又不占地方。量级来自实测（3 秒空转约 13 KB，info/v/debug 三档
+# 体积几乎无差别）；若实测需要调整，改这两个模块级常量即可。
+LOG_MAX_SIZE = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
 # 控制/状态桥的默认位置。使用脚本目录而不是当前工作目录，避免从
 # 不同快捷方式启动时找不到文件；路径也可以通过命令行参数覆盖。
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_COMMAND_FILE = os.path.join(SCRIPT_DIR, "syncplay_command.json")
 DEFAULT_STATUS_FILE = os.path.join(SCRIPT_DIR, "syncplay_status.json")
+
+# 客户端日志落盘状态（--log-file）。默认关闭：不传参数时与旧版行为
+# 完全一致（只打 stdout，不写文件），保证向后兼容。
+_log_file_lock = threading.Lock()
+_log_file_path = None
+
+
+def set_log_file(path):
+    """启用客户端日志落盘；path 为 None/空串表示关闭。"""
+    global _log_file_path
+    if path:
+        try:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        except OSError:
+            # 目录建不出来不致命：真正写日志失败时还会再兜底一次。
+            pass
+    _log_file_path = path or None
+
+def _rotate_log_file(path):
+    # 写满上限后整文件改名归档：删除最老的 .3，.2→.3、.1→.2、当前→.1。
+    # 保留 3 份归档的原因见 LOG_MAX_SIZE 处注释。
+    try:
+        oldest = "%s.%d" % (path, LOG_BACKUP_COUNT)
+        if os.path.exists(oldest):
+            os.remove(oldest)
+        for index in range(LOG_BACKUP_COUNT - 1, 0, -1):
+            src = "%s.%d" % (path, index)
+            if os.path.exists(src):
+                os.replace(src, "%s.%d" % (path, index + 1))
+        os.replace(path, path + ".1")
+    except OSError:
+        # 轮转失败（如归档被占用）就继续向当前文件追加，绝不影响同步。
+        pass
+
+def _append_log_file(line):
+    path = _log_file_path
+    if not path:
+        return
+    try:
+        data = redact(line).encode("utf-8", "replace")
+        with _log_file_lock:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            if size + len(data) > LOG_MAX_SIZE:
+                _rotate_log_file(path)
+            with open(path, "ab") as fh:
+                fh.write(data)
+    except OSError:
+        # 红线：日志只是辅助能力，写文件失败（目录只读、路径是目录等）
+        # 绝不能让同步连接断开——吞掉 OSError，降级为仅输出 stdout。
+        pass
 
 def log(msg):
     text = time.strftime("[%H:%M:%S] ") + str(msg)
@@ -80,6 +147,7 @@ def log(msg):
         if stream is not None:
             stream.write((text + "\n").encode(sys.stdout.encoding or "utf-8", "replace"))
             stream.flush()
+    _append_log_file(text + "\n")
 
 def fmt_time(sec):
     sec = int(sec or 0)
@@ -3028,7 +3096,12 @@ def main():
                     help="HTTP 媒体预读秒数（默认 20）")
     ap.add_argument("--alist-test-url", default=None, metavar="MEDIA_URL",
                     help="检测 AList 直链及 HTTP Range 后退出")
+    ap.add_argument("--log-file", dest="log_file", default=None,
+                    help="把客户端日志追加写入该文件并自动轮转"
+                         "（默认不写文件，行为与旧版一致）")
     args = ap.parse_args()
+
+    set_log_file(args.log_file)
 
     if args.alist_test_url:
         media_test = probe_media_url(args.alist_test_url)

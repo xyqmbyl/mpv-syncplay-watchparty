@@ -120,6 +120,32 @@ Python、AList 和首次运行所需组件。
   在插件菜单里使用“检查更新”，上游版本会覆盖这些定制改动，覆盖后默认字号
   会回到上游数值，需要重新设置一次。
 
+## 日志与诊断
+
+右键菜单 **导航 → 日志** 下有两个入口，用来排查播放或联机问题：
+
+- **打开日志文件夹**：打开便携版根目录下的 `logs\`（与 `mpv.exe` 同级，不是
+  `portable_config\` 里面）。里面按来源分三类文件，文件名都带时间戳，所以多次
+  运行不会互相覆盖：
+  - `mpv-*.log`：mpv 本体日志，每次启动新开一个文件
+  - `client-*.log`：联机客户端日志，每次启动客户端新开一个文件
+  - `launcher.log`：启动器追加日志，`启动.bat` 与 `首次运行.bat` 共用一个文件
+- **自动清理**：默认开启，保留最近 **30 天**，启动时清理一次，也可以在菜单里
+  点「立即清理一次」。周期可以直接切换成 7 / 14 / 30 / 60 / 90 天。设置写在
+  `portable_config\script-opts\log_menu.conf`，下次启动仍然生效。
+
+日志默认全部开启。把 `log_menu.conf` 里的 `enabled` 改成 `no`（或从菜单里
+关掉）就不再写 `mpv-*.log`，联机客户端也不会收到 `--log-file`——不需要排查
+问题时关掉即可，不会产生新文件。启动器仍会写 `launcher.log`。
+
+分享日志前请注意：日志里可能带媒体 URL。`log_redact.py` 会把 URL 中的
+`token=` / `sign=` 等凭据类查询参数替换成 `***`，联机客户端在写入前会调用它。
+打包脚本随包附带该脚本，可在包内单独运行：
+
+```powershell
+python portable_config\syncplay\log_redact.py --dir logs
+```
+
 ## 验证
 
 运行标准库测试：
@@ -128,6 +154,10 @@ Python、AList 和首次运行所需组件。
 python -m unittest discover -s portable_config\syncplay -p "test_*.py" -v
 python WatchParty\ViewerPackage\test_ui_baseline.py -v
 ```
+
+> `test_ui_baseline.py` 目前有 2 项预存失败（`test_main_menu_drops_only_the_two_groups`
+> 中的 `VF 滤镜` / `着色器` 分组），原因是该测试期望的主菜单分组口径与上游已推送
+> 的包不一致，与日志功能无关。
 
 可选的真实 mpv IPC 测试：
 

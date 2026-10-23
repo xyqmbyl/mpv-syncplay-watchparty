@@ -689,6 +689,34 @@ launch_client = function()
     }
     local _, alist_error = append_alist_arguments(args)
     if alist_error then notify(alist_error) end
+    -- 客户端日志落盘：仅当日志菜单开启（script-opts/log_menu.conf 的
+    -- enabled=yes）时追加。文件名带会话时间戳，每次启动一个文件，
+    -- 避免多次启动写进同一个文件互相混淆。读不到配置就静默跳过，
+    -- 绝不因为日志配置影响同步客户端启动。
+    local log_menu_conf = mp.command_native({"expand-path", "~~/script-opts/log_menu.conf"})
+    local client_log_enabled = false
+    if log_menu_conf and log_menu_conf ~= "" then
+        local log_menu_file = io.open(log_menu_conf, "r")
+        if log_menu_file then
+            for line in log_menu_file:lines() do
+                local key, value = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+                if key == "enabled" then
+                    local flag = value:lower()
+                    client_log_enabled = (flag == "yes" or flag == "true" or flag == "1")
+                end
+            end
+            log_menu_file:close()
+        end
+    end
+    if client_log_enabled then
+        local client_logs_dir = mp.command_native({"expand-path", "~~/../logs"})
+        if client_logs_dir and client_logs_dir ~= "" then
+            local client_log_sep = client_logs_dir:sub(-1) == "/" and "" or "/"
+            args[#args + 1] = "--log-file"
+            args[#args + 1] = client_logs_dir .. client_log_sep
+                .. "client-" .. os.date("%Y%m%d-%H%M%S") .. ".log"
+        end
+    end
     local generation = client_generation
     client_handle = mp.command_native_async({
         name = "subprocess",

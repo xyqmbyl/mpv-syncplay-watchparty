@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- 新增三段日志，统一落在便携版根目录 `logs\`（与 `mpv.exe` 同级）：mpv 本体
+  （`mpv-*.log`）、联机客户端（`client-*.log`）与启动器（`launcher.log`）。
+  前两者文件名带会话时间戳、每次启动新开一个文件，多次运行不会互相覆盖。
+- 新增右键菜单 **导航 → 日志**：一键打开日志文件夹；可按开关与周期
+  （7/14/30/60/90 天，默认 30 天）自动清理旧日志，另可「立即清理一次」。
+  设置保存在 `portable_config\script-opts\log_menu.conf`，日志默认开启。
+- 新增 `log_redact.py`：把日志中媒体 URL 的 `token=` / `sign=` 等凭据类查询
+  参数替换为 `***`，联机客户端写入前调用；随打包脚本一起进包。
+- 修复打包允许列表遗漏：`log_maintenance.py`、`log_redact.py` 与
+  `log_menu.conf` 此前未随包发布，导致安装包内日志清理与脱敏不可用。
+- 编码规范变更：`WatchParty\启动.bat` 与 `WatchParty\首次运行.bat` 改为
+  GBK/ANSI 无 BOM、去掉 `chcp 65001`，`AGENTS.md` 同步更新。
+
 ## 0.5.1 - 2026-09-26
 
 - 修复 macOS 弹幕搜索无法用拼音输入中文的问题：mpv 的 mac 前端没有输入法

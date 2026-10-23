@@ -31,3 +31,10 @@ portable_config/saved-props.json
 *.tmp
 *.zip
 !.github/**
+
+# 运行期日志目录（launcher.log、mpv-*.log、client-*.log 等），本地产物不提交。
+# 注意上面的 *.log 只覆盖文件，目录本身需要显式忽略。
+logs/
+
+# 本地代码图谱工具（graphflow MCP）的产物：索引库与临时分析文件，不提交。
+graphflow-out/

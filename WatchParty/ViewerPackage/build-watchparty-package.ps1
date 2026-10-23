@@ -214,6 +214,8 @@ foreach ($relative in @(
     'syncplay\alist_diagnostics.py',
     'syncplay\tailscale_integration.py',
     'syncplay\watchparty_setup.py',
+    'syncplay\log_maintenance.py',
+    'syncplay\log_redact.py',
     'fonts\MaterialIconsRound-Regular.otf',
     'fonts\uosc_textures.ttf'
 )) {
@@ -227,6 +229,7 @@ $uiLayerFiles = @(
     'profiles.conf',
     'script-opts.conf',
     'script-opts\mpv360.conf',
+    'script-opts\log_menu.conf',
     'scripts\autoload.lua',
     'scripts\contextmenu_plus.lua',
     'scripts\copy-paste-URL.lua',
@@ -384,12 +387,31 @@ Get-ChildItem -LiteralPath $licenseSource -File -Force | ForEach-Object {
 }
 
 # cmd.exe 对混合换行尤其敏感。无论源码编辑器使用何种换行，Release 中
-# 所有批处理都固定为 UTF-8 无 BOM + CRLF。
+# 所有批处理都固定为 CRLF，但**编码必须保持原样**。
+# 两个启动器（启动.bat / 首次运行.bat）是 GBK/ANSI(cp936) 无 BOM 文件，GBK 字节
+# 不是合法 UTF-8 序列：若统一按 UTF-8 读回再写出，每个中文字符都会退化成 U+FFFD
+# （实测 568 B -> 851 B、147 个替换字符），cmd 里中文提示全部变乱码。
+# 因此先对原始字节做一次严格 UTF-8 试解码，按结果二选一：
+#   能解出 -> 纯 ASCII / UTF-8 批处理，按 UTF-8 无 BOM 写回（与既有行为一致）
+#   解不出 -> ANSI/GBK 批处理，用 cp936 读回并用 cp936 原样写回，编码不变
+$utf8Strict = New-Object Text.UTF8Encoding($false, $true)
+$ansi936 = [Text.Encoding]::GetEncoding(936)
 $batchFiles = Get-ChildItem -LiteralPath $stagePath -Filter '*.bat' -File -Recurse -Force
+$batchReadEncodings = @{}
 foreach ($file in $batchFiles) {
-    $content = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8)
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    $isUtf8 = $true
+    try {
+        $null = $utf8Strict.GetString($bytes)
+    } catch [System.Text.DecoderFallbackException] {
+        $isUtf8 = $false
+    }
+    $readEncoding = if ($isUtf8) { [Text.Encoding]::UTF8 } else { $ansi936 }
+    $writeEncoding = if ($isUtf8) { $utf8 } else { $ansi936 }
+    $batchReadEncodings[$file.FullName] = $readEncoding
+    $content = [IO.File]::ReadAllText($file.FullName, $readEncoding)
     $normalized = $content.Replace("`r`n", "`n").Replace("`r", "`n").Replace("`n", "`r`n")
-    [IO.File]::WriteAllText($file.FullName, $normalized, $utf8)
+    [IO.File]::WriteAllText($file.FullName, $normalized, $writeEncoding)
 }
 foreach ($file in $batchFiles) {
     $bytes = [IO.File]::ReadAllBytes($file.FullName)
@@ -397,7 +419,9 @@ foreach ($file in $batchFiles) {
             $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
         throw "审计失败，批处理包含 UTF-8 BOM：$($file.FullName)"
     }
-    $content = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8)
+    # 换行审计必须用与该文件相同的编码读回：GBK 文件按 UTF-8 读会变成 U+FFFD，
+    # 虽然 CR/LF 仍可判，但统一按原编码读才能保证审计结论对应真实字节。
+    $content = [IO.File]::ReadAllText($file.FullName, $batchReadEncodings[$file.FullName])
     if ($content -match '(?<!\r)\n|\r(?!\n)') {
         throw "审计失败，批处理没有统一使用 CRLF：$($file.FullName)"
     }
@@ -421,7 +445,10 @@ $requiredFiles = @(
     'portable_config\syncplay\alist_diagnostics.py',
     'portable_config\syncplay\tailscale_integration.py',
     'portable_config\syncplay\watchparty_setup.py',
+    'portable_config\syncplay\log_maintenance.py',
+    'portable_config\syncplay\log_redact.py',
     'portable_config\script-opts\syncplay_ui.conf',
+    'portable_config\script-opts\log_menu.conf',
     'portable_config\mpv-base.conf',
     'portable_config\scripts\uosc_danmaku\main.lua',
     'portable_config\scripts\uosc_danmaku\apis\dandanplay.lua',
@@ -621,6 +648,9 @@ Invoke-PackagedCommand -FilePath $packagedPython `
 Invoke-PackagedCommand -FilePath $packagedPython `
     -Arguments @('-X', 'utf8', '-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\mpv_syncplay.py'), '--help') `
     -FailureMessage "Syncplay 客户端无法由包内 Python 加载。" | Out-Null
+Invoke-PackagedCommand -FilePath $packagedPython `
+    -Arguments @('-X', 'utf8', '-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\log_maintenance.py'), '--help') `
+    -FailureMessage "WatchParty 日志维护模块无法由包内 Python 加载。" | Out-Null
 Invoke-PackagedCommand -FilePath $packagedPython `
     -Arguments @('-I', '-B', (Join-Path $stagePath 'portable_config\syncplay\tailscale_integration.py'), '--json', 'verify-installer') `
     -FailureMessage "WatchParty 包内 Tailscale 安装包验证失败。" | Out-Null
