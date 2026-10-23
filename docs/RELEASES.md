@@ -213,8 +213,8 @@ gh release upload v0.5.2 \
 
 ### 5.1 当前状态（截至本文件写作时）
 
-- 本次两项功能改动（日志能力三项 + 相关配套）**已提交并已推送**：`main` 上的提交 `e01c566`（`feat(logs): 三段日志落盘 + 右键「导航 > 日志」菜单（含自动清理）`），推送后 `git status -sb` 显示 `## main...origin/main`（无 ahead/behind）。**尚未 bump 版本号**，`CHANGELOG.md` 顶层仍是 `## 0.5.1 - 2026-09-26`（`CHANGELOG.md:3`）。
-- 提交之后又做了一次菜单位置调整：日志子菜单从 **导航 → 日志** 移到 **工具 → 日志**（用户要求，菜单逻辑与功能不变）。该调整涉及 `portable_config/input_contextmenu_plus.conf`、`portable_config/script-opts/log_menu.conf`、`README.md`、`CHANGELOG.md` 四个文件，**截至本文件本次改写时仍在工作树中未提交**（`git status --porcelain` 对这 4 个文件显示 ` M`），下次提交时一并推送。注意 `e01c566` 的提交信息里写的是「导航 > 日志」，那是提交当时的位置，不改写历史。
+- 本次两项功能改动（日志能力三项 + 相关配套）**已提交并已推送**：`main` 上的提交 `e01c566`（`feat(logs): 三段日志落盘 + 右键「导航 > 日志」菜单（含自动清理）`）。**尚未 bump 版本号**，`CHANGELOG.md` 顶层仍是 `## 0.5.1 - 2026-09-26`（`CHANGELOG.md:3`）。
+- 提交之后又做了一次菜单位置调整：日志子菜单从 **导航 → 日志** 移到 **工具 → 日志**（用户要求，菜单逻辑与功能不变）。该调整涉及 `portable_config/input_contextmenu_plus.conf`、`portable_config/script-opts/log_menu.conf`、`README.md`、`CHANGELOG.md`、`docs/RELEASES.md` 五个文件，**已作为提交 `13ce3b5`（`refactor(menu): 日志菜单从「导航」移到「工具」，功能与逻辑不变`）提交并推送**；推送后 `git status -sb` 显示 `## main...origin/main`（无 ahead/behind），工作树干净。注意 `e01c566` 的提交信息里写的是「导航 > 日志」，那是提交当时的位置，不改写历史。
 - 用户已明确要求（m00112）：「是两个功能改动一起bump 版本号，这次先不改，但下次那快捷上传。」→ **下次上传时，两项改动合并成一个新版本号，只 bump 一次。**
 - 涉及的两个功能面向：
   1. **日志能力**：mpv 本体日志（`portable_config/scripts/contextmenu_plus.lua`）、启动器日志（`WatchParty/启动.bat`、`WatchParty/首次运行.bat`）、联机客户端日志（`portable_config/syncplay/mpv_syncplay.py` 的 `--log-file`）。
@@ -232,11 +232,9 @@ git describe --tags --abbrev=0          # 预期 v0.5.1
 
 # 1) 上传前复核：log_redact.py 已在两个打包脚本的白名单里（见第六节，已修复，复核即可）
 
-# 1.5) 若「工具 → 日志」菜单位置调整尚未提交（见 5.1 第二条），先补一个提交
-git add portable_config/input_contextmenu_plus.conf portable_config/script-opts/log_menu.conf `
-        README.md CHANGELOG.md docs/RELEASES.md
-git commit -m "refactor(menu): 日志菜单从「导航」移到「工具」，功能与逻辑不变"
-git push origin main
+# 1.5) 「工具 → 日志」菜单位置调整已于 13ce3b5 提交并推送（见 5.1 第二条），此处只需确认：
+git log --oneline -3        # 预期能看到 13ce3b5 与 e01c566
+git status -sb              # 预期 ## main...origin/main，无 ahead/behind
 
 # 2) 提交前必须通过的测试（AGENTS.md:95 / :98 / :101）
 python -m unittest discover -s portable_config\syncplay -p "test_*.py" -v
@@ -268,6 +266,15 @@ gh release upload v0.5.2 "WatchParty\ViewerPackage\output\WatchParty-Windows-x64
 # 9) 按第四节验证
 ```
 
+> **推送通道备注（实测）**：本机到 `github.com:443` 的 HTTPS 会被重置/超时
+> （`fatal: unable to access ...: Recv failure: Connection was reset`、
+> `Failed to connect to github.com:443 after 21098 ms`），但 `ssh.github.com:443` 可用。
+> 若 `git push origin main` 报上述错误，改用：
+>
+> ```bash
+> git push ssh://git@ssh.github.com:443/xyqmbyl/mpv-syncplay-watchparty.git main
+> ```
+
 （第 8 步在 PowerShell 下用反引号续行，在 bash 下改成 `\`。）
 
 ---
@@ -286,7 +293,7 @@ gh release upload v0.5.2 "WatchParty\ViewerPackage\output\WatchParty-Windows-x64
 
 单测是在源码目录里跑的，`log_redact.py` 就在 `mpv_syncplay.py` 旁边，两份导入路径都能成功；测试断言的是「脱敏逻辑对不对」，而不是「发布包里有没有这个文件」。全仓也没有任何测试或构建断言打包白名单的条目集合，所以只有真正构建一次包才会暴露。——「没有白名单断言」这一点由 `grep` 全仓打包脚本与 `test_*.py` 均无白名单相关断言得出（事实）；「只有构建才会暴露」为**推断**。
 
-### 6.3 当前状态：已在工作树修复（未提交）
+### 6.3 当前状态：已修复并已随 `e01c566` 提交推送
 
 两个打包脚本的白名单现在都显式包含 `log_redact.py`，以及本次日志能力同批新增的 `log_maintenance.py`、`log_menu.conf`：
 
