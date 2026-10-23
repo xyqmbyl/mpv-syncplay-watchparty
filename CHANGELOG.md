@@ -8,6 +8,14 @@
 - 新增右键菜单 **工具 → 日志**：一键打开日志文件夹；可按开关与周期
   （7/14/30/60/90 天，默认 30 天）自动清理旧日志，另可「立即清理一次」。
   设置保存在 `portable_config\script-opts\log_menu.conf`，日志默认开启。
+- 修复右键主菜单看不到日志入口：日志菜单此前只写在
+  `input_contextmenu_plus.conf`，而 uosc 右键主菜单读取的是
+  `input_uosc.conf`（`mpv.conf` 的 `input-conf` 指向它），导致右键「工具」组
+  里始终没有日志子菜单。现已在 `input_uosc.conf` 的「工具」组下静态加入
+  「日志」子菜单（打开日志文件夹 / 自动清理开关 / 清理周期 7~90 天 /
+  立即清理一次），调用 `contextmenu_plus.lua` 已注册的同一组 `log-menu-*`
+  消息，功能与 `log_menu.conf` 持久化逻辑不变；
+  `input_contextmenu_plus.conf` 里的同名动态入口保留，两处分组一致。
 - 新增 `log_redact.py`：把日志中媒体 URL 的 `token=` / `sign=` 等凭据类查询
   参数替换为 `***`，联机客户端写入前调用；随打包脚本一起进包。
 - 修复打包允许列表遗漏：`log_maintenance.py`、`log_redact.py` 与

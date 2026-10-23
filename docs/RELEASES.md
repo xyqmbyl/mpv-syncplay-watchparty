@@ -395,4 +395,73 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 7. **`graphflow-out/` 未跟踪目录的来源未查**（疑似 graphflow MCP 产物），不应提交。原文提到的 `docs/_tmp_b18.md`、`docs/_tmp_b24.md` 现已不存在：实测 `docs/` 目录下**只有 `RELEASES.md` 一个文件**。
 8. **正文里指向 `AGENTS.md` 的行号引用可能已过期**。工作树对 `AGENTS.md` 第 2 条做了扩写（原 `:72-73` 两行 → 现 `:72-78` 七行），其后所有内容整体下移约 5 行，因此本文里形如 `AGENTS.md:90` / `:93` / `:96` / `:147-148` 的引用是改动前的行号，**未逐一重测**。
 
+---
+
+## 十、2026-10-24 修复：日志菜单在 uosc 右键主菜单中不可见
+
+用户反馈（m01213，附右键截图）：桌面 mpv 右键主菜单里没有日志入口。
+
+### 10.1 根因（实测）
+
+- 右键主菜单由 **uosc** 生成，数据源是 `portable_config/mpv.conf:4` 的
+  `input-conf = "~~/input_uosc.conf"`。uosc 的解析器（`scripts/uosc/lib/menus.lua`
+  的 `get_all_user_bindings()`）逐行读该文件，以 `#!` 注释里 `A > B > C` 形式的
+  标题建分级菜单（`#` 键位 = 纯菜单项），**不认识 `#@关键字` 动态子菜单**
+  （uosc 源码全文无 `#@` 处理）。
+- 而日志菜单此前只写在 `portable_config/input_contextmenu_plus.conf:28`
+  （`#! 工具 > ⇲ 日志 > #@log`）。该文件只被 contextmenu_plus 脚本消费
+  （`script-opts.conf:45` 的 `contextmenu_plus-input_conf=...`），生成的是另一套
+  menu-data；mpv 日志里虽能看到 `load menu: ⇲ 日志, keyword: log`，但默认右键
+  打开的是 uosc 菜单，用户永远看不到它。
+- 用户截图的顶级分组（加载/导航/VF 滤镜/着色器/截屏/视频/工具/关于）与
+  `input_uosc.conf` 的分组一致，佐证以上结论。
+
+### 10.2 修复方式
+
+- `portable_config/input_uosc.conf`「工具」组末尾静态加入「日志」子菜单共 8 行：
+  📂 打开日志文件夹 / 🧹 自动清理（开/关切换）/ 🗓 清理周期（三级子菜单，
+  静态列出 7/14/30/60/90 天）/ 🧹 立即清理一次。命令直接调用
+  `contextmenu_plus.lua:1129-1143` 已注册的 `log-menu-open-dir` /
+  `log-menu-toggle-auto` / `log-menu-set-days N` / `log-menu-clean-now` 消息，
+  与 `#@log` 动态子菜单的动作一一对应。uosc 静态条目显示不了动态勾选态
+  （当前开关状态/当前周期值），这是唯一差异；功能与 `log_menu.conf` 的
+  持久化逻辑完全不变。
+- `input_contextmenu_plus.conf:28` 的动态入口**保留**：它是另一条菜单路径
+  （contextmenu_plus 侧），分组同样挂在「工具」下，与 uosc 侧功能一致，
+  不构成矛盾；删掉反而削弱该路径的能力。
+- 部署：本次代码改动只有 `input_uosc.conf` 一个文件，已复制到运行目录
+  `D:\MPV-Duke-Enhanced-Extra\portable_config\` 并 sha256 比对一致；同批核对的
+  `input_contextmenu_plus.conf`、`scripts/contextmenu_plus.lua`、
+  `script-opts/log_menu.conf` 仓库与运行目录也一致。
+
+### 10.3 验证（全部实测）
+
+- **解析器等价复刻**：按 `menus.lua` 的逐行解析逻辑写 Python 校验脚本跑新
+  `input_uosc.conf`：顶级分组与用户截图一致；「工具」组末尾为「日志」子菜单，
+  4 个动作 + 5 档周期条目与命令一一对应。
+- **单测**：`D:\MPV-Duke-Enhanced-Extra\python.exe -m unittest discover -s
+  portable_config\syncplay -p "test_*.py" -v` → `Ran 279 tests / OK (skipped=1)`，
+  与基线一致；`test_ui_baseline.py` 仍为既有 2 处失败（`VF 滤镜`/`着色器` 分组
+  口径，见第九节），无新增失败。
+- **端到端**（临时 config 目录实跑 `D:\MPV-Duke-Enhanced-Extra\mpv.exe`，
+  同版 uosc 5.12.0 + contextmenu_plus，不触碰用户运行目录）：
+  - IPC `script-binding uosc/menu` 打开菜单，`user-data/uosc/menu/type`
+    由 `property not found` 变为 `"menu"`；
+  - 逐级键导航：主菜单第 7 项「工具」→ 工具组第 11 项「日志」→ 日志组
+    第 3 项「🗓 清理周期」→ 第 4 项「60 天」→ 回车，`log_menu.conf`
+    **精确写入 `retention_days=60`**（菜单内容、条目顺序、命令绑定三重证明；
+    uosc 菜单打开时默认选中第 1 项，DOWN 计数按此校准）；
+  - 窗口截图逐级确认：「工具」子菜单末尾高亮项为「日志 ›」；「日志」子菜单
+    四项 📂 打开日志文件夹 / 🧹 自动清理（开/关切换）/ 🗓 清理周期 › /
+    🧹 立即清理一次全部可见；「清理周期」子菜单 7/14/30/60/90 天五项齐全、
+    60 天高亮；
+  - 另直发 `script-message log-menu-set-days 14` → conf 写入
+    `retention_days=14`，消息回路与持久化均可用。
+
+### 10.4 涉及文件
+
+`portable_config/input_uosc.conf`（+12 行）、`README.md`（「日志与诊断」节
+措辞）、`CHANGELOG.md`（Unreleased 新增修复条目）、`docs/RELEASES.md`（本节）。
+**未 bump 版本号**；提交后经 `ssh://git@ssh.github.com:443/` 通道推送 main。
+
 <!-- 生成于 2026-10-23，WatchParty 日志功能交付时留痕 -->
