@@ -38,3 +38,4 @@ logs/
 
 # 本地代码图谱工具（graphflow MCP）的产物：索引库与临时分析文件，不提交。
 graphflow-out/
+.graphflow-cache/
