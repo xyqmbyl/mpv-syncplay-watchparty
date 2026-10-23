@@ -213,7 +213,8 @@ gh release upload v0.5.2 \
 
 ### 5.1 当前状态（截至本文件写作时）
 
-- 本次两项功能改动（日志能力三项 + 相关配套）**尚未提交、尚未 bump 版本号**，`CHANGELOG.md` 顶层仍是 `## 0.5.1 - 2026-09-26`（`CHANGELOG.md:3`）。
+- 本次两项功能改动（日志能力三项 + 相关配套）**已提交并已推送**：`main` 上的提交 `e01c566`（`feat(logs): 三段日志落盘 + 右键「导航 > 日志」菜单（含自动清理）`），推送后 `git status -sb` 显示 `## main...origin/main`（无 ahead/behind）。**尚未 bump 版本号**，`CHANGELOG.md` 顶层仍是 `## 0.5.1 - 2026-09-26`（`CHANGELOG.md:3`）。
+- 提交之后又做了一次菜单位置调整：日志子菜单从 **导航 → 日志** 移到 **工具 → 日志**（用户要求，菜单逻辑与功能不变）。该调整涉及 `portable_config/input_contextmenu_plus.conf`、`portable_config/script-opts/log_menu.conf`、`README.md`、`CHANGELOG.md` 四个文件，**截至本文件本次改写时仍在工作树中未提交**（`git status --porcelain` 对这 4 个文件显示 ` M`），下次提交时一并推送。注意 `e01c566` 的提交信息里写的是「导航 > 日志」，那是提交当时的位置，不改写历史。
 - 用户已明确要求（m00112）：「是两个功能改动一起bump 版本号，这次先不改，但下次那快捷上传。」→ **下次上传时，两项改动合并成一个新版本号，只 bump 一次。**
 - 涉及的两个功能面向：
   1. **日志能力**：mpv 本体日志（`portable_config/scripts/contextmenu_plus.lua`）、启动器日志（`WatchParty/启动.bat`、`WatchParty/首次运行.bat`）、联机客户端日志（`portable_config/syncplay/mpv_syncplay.py` 的 `--log-file`）。
@@ -230,6 +231,12 @@ git log --oneline -5
 git describe --tags --abbrev=0          # 预期 v0.5.1
 
 # 1) 上传前复核：log_redact.py 已在两个打包脚本的白名单里（见第六节，已修复，复核即可）
+
+# 1.5) 若「工具 → 日志」菜单位置调整尚未提交（见 5.1 第二条），先补一个提交
+git add portable_config/input_contextmenu_plus.conf portable_config/script-opts/log_menu.conf `
+        README.md CHANGELOG.md docs/RELEASES.md
+git commit -m "refactor(menu): 日志菜单从「导航」移到「工具」，功能与逻辑不变"
+git push origin main
 
 # 2) 提交前必须通过的测试（AGENTS.md:95 / :98 / :101）
 python -m unittest discover -s portable_config\syncplay -p "test_*.py" -v
@@ -298,7 +305,7 @@ gh release upload v0.5.2 "WatchParty\ViewerPackage\output\WatchParty-Windows-x64
 
 - **macOS 包的运行时自检不含 `log_maintenance.py` 的 `--help`**（Windows 侧 `build-watchparty-package.ps1:652` 有）。实测 `WatchParty/ViewerPackage/build-macos-package.sh:451` 注释为 `# 7. 运行时自检：包内 python、AList、mpv 都要能启动；Tailscale 安装包哈希核对。`，其后只有 `:454` `watchparty_setup.py --help`、`:455` `mpv_syncplay.py --help`、`:456` `tailscale_integration.py verify-installer`——**确实没有** `log_maintenance.py --help`。
 - **两个脚本都没有单独针对 `log_redact.py` 的自检项**。它只被间接覆盖：`mpv_syncplay.py:52` 的导入在模块顶层，所以两个脚本各自的 `mpv_syncplay.py --help` 自检一旦执行到该导入语句就会连带验证它。也就是说白名单再漏掉 `log_redact.py` 时，构建会在自检阶段失败而不是静默产出坏包——但这条是**推断**，本次未实际构建验证（见第八节）。
-- **本节所有「已修复」证据都来自未提交的工作树**，`git status --porcelain` 对两个打包脚本都显示 ` M`。合并/提交时不要漏掉这两个文件的改动，否则缺陷会随提交一起回流。
+- **本节所有「已修复」证据当时取自未提交的工作树；这些改动现已随 `e01c566` 提交并推送**（实测 `git status --porcelain` 对两个打包脚本已无 ` M`，`main` 与 `origin/main` 同步）。下文按改写时的实际行号记录，供复核使用。
 
 ---
 
@@ -339,7 +346,7 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 - **变更前的规范原文**（`git show HEAD:AGENTS.md` 第 2 条，原 `AGENTS.md:72-73`）：```.bat` 一律 UTF-8 无 BOM + CRLF，开头 `chcp 65001`，注意 `!` 延迟展开兼容；Python 输出显式 UTF-8；shell 脚本 LF。``
 - **当前规范原文**（工作树 `AGENTS.md:72-78`）：`` `.bat` 一律 **GBK/ANSI（zh-CN）无 BOM + CRLF，不写 `chcp 65001`**，注意 `!` 延迟展开兼容。原因：Win11 24H2+ 的 cmd 解析含多字节 UTF-8 的批处理会错位（表现为 `语法错误` 后窗口一闪而过），UTF-8 + `chcp 65001` 方案已不可用；控制台默认 cp936，中文正常显示。Python 输出显式 UTF-8；管道里的 `--json` 输出由 `PYTHONIOENCODING=utf-8` 保证为 UTF-8；shell 脚本 LF。（本条于 2026-10 按用户裁决由「.bat 用 UTF-8 无 BOM + `chcp 65001`」改为现状，详见 `docs/RELEASES.md`。）``
 - **状态**：`AGENTS.md` 的编码条目已按**用户裁决**同步改写为 GBK/ANSI 口径；工作树里两个 `.bat` 的实际实现与该新口径一致（7.1 实测），因此**规范与实现一致，不是未决冲突**。（来源：用户裁决；`AGENTS.md:77-78` 亦自述「本条于 2026-10 按用户裁决…改为现状」。）
-- 该改动尚未提交：`git status --porcelain` 显示 ` M AGENTS.md`、` M "WatchParty/启动.bat"`、` M "WatchParty/首次运行.bat"`。
+- 该改动**已随 `e01c566` 提交并推送**（连同 `AGENTS.md`、两个 `.bat` 与两个打包脚本）；实测当前 `git status --porcelain` 对这三个文件已无 ` M`。
 
 ---
 
