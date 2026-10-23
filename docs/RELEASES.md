@@ -464,4 +464,59 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 措辞）、`CHANGELOG.md`（Unreleased 新增修复条目）、`docs/RELEASES.md`（本节）。
 **未 bump 版本号**；提交后经 `ssh://git@ssh.github.com:443/` 通道推送 main。
 
+---
+
+## 十一、2026-10-24 防复发：右键菜单双体系守卫（无功能改动）
+
+用户裁决（m01290，引用「两套菜单并存容易再犯写错文件的错」→ 处理，注意
+不影响功能）。本次**不改任何运行时行为**：两套菜单、日志功能、快捷键全部
+维持 27e4b51 的状态，只加守卫。
+
+### 11.1 三道防线
+
+1. **文件内警示**：`portable_config/input_uosc.conf` 与
+   `portable_config/input_contextmenu_plus.conf` 头部各加注释，写明本文件
+   服务于哪个菜单（普通右键 / Ctrl+右键）、另一套的数据源在哪、uosc 解析器
+   不认识动态子菜单标记；`script-opts.conf` 的 `contextmenu_plus-input_conf`
+   接线处加同义说明。纯 `# ` 注释行的安全性经两套解析器源码逐一核实：
+   uosc（`menus.lua`）按「非菜单注释行」过滤；contextmenu_plus
+   （`parse_line`/`extract_title`）空标题不生成条目——均被整体忽略。
+2. **协作规范**：`AGENTS.md` 开发规范新增第 7 条「右键菜单双体系」：给用户
+   可见菜单加项必须写 `input_uosc.conf`，两套「工具 > 日志」入口保持同组，
+   改动后跑 `portable_config/syncplay/test_menu_conf.py`。
+3. **静态回归测试**：新增 `portable_config/syncplay/test_menu_conf.py`
+   （并入 `unittest discover`，与既有单测一起跑），9 项断言：
+   - uosc conf 顶级分组基线（加载/导航/VF 滤镜/着色器/截屏/视频/工具/关于）；
+   - 「工具 > 日志」四个动作 + 「🗓 清理周期」7~90 天 5 档，标题与命令逐项相等；
+   - conf 里全部 `log-menu-*` 命令必须在 `contextmenu_plus.lua` 的
+     `mp.register_script_message` 中已注册（防「菜单在、点了没反应」）；
+   - uosc conf 不得出现 `#!…#@…` 动态子菜单标记（uosc 渲染不出来，即第十节
+     那类回归的错误特征，再写必被测试拦下）；
+   - contextmenu_plus conf 的日志入口必须在「工具」组、不得回到已废弃的
+     「导航」位置（用户裁决 m00981）；
+   - 接线钉死：发布包模板 `WatchParty/ViewerPackage/templates/mpv-base.conf`
+     的 `input-conf` 指向 `input_uosc.conf`、`script-opts.conf` 的
+     `contextmenu_plus-input_conf` 指向 `input_contextmenu_plus.conf`
+     （仓库不跟踪运行目录的 mpv.conf，故钉模板）。
+
+### 11.2 验证（实测）
+
+- `test_menu_conf.py` 9 项全绿；全量 `unittest discover` 由 279 增至
+  **288 项 / OK (skipped=1)**；`test_ui_baseline.py` 仍为既有 2 处失败，无新增。
+- 临时 config 实跑 mpv 冒烟（装入加注释后的两份 conf + 接线）：uosc 菜单正常
+  打开（`user-data/uosc/menu/type = "menu"`）；contextmenu_plus 的 11 个
+  `#@` 动态子菜单全部正常 `load menu`（含 `⇲ 日志`）。临时日志里 2 行
+  `Subprocess failed: init` 是临时目录缺少随包 `python.exe` 导致的日志清理
+  助手启动失败，属环境现象，与注释改动无关（真实运行目录无此问题）。
+- 部署后仓库与运行目录 sha256 逐文件一致。
+
+### 11.3 涉及文件
+
+`portable_config/input_uosc.conf`（头注释）、
+`portable_config/input_contextmenu_plus.conf`（头注释）、
+`portable_config/script-opts.conf`（接线说明）、
+`portable_config/syncplay/test_menu_conf.py`（新增）、`AGENTS.md`（开发规范
+第 7 条）、`CHANGELOG.md`（Unreleased）、`docs/RELEASES.md`（本节）。
+**未 bump 版本号**；提交后经 `ssh://git@ssh.github.com:443/` 通道推送 main。
+
 <!-- 生成于 2026-10-23，WatchParty 日志功能交付时留痕 -->

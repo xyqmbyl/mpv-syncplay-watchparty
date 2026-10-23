@@ -85,6 +85,13 @@ repo-latest/
    构建后运行审计与冒烟自检；产物带逐文件清单和 SHA-256。
 6. **文档同步**：行为变更必须同步 README / CHANGELOG 的 Unreleased 段。
    发布版本号写入 CHANGELOG 顶层。
+7. **右键菜单双体系**：本项目有两套互不相通的右键菜单——普通右键（uosc）
+   的数据源是 `portable_config/input_uosc.conf`（`mpv.conf` 的 `input-conf`
+   指向它；uosc 解析器**不认识** `#@` 动态子菜单标记）；`Ctrl+右键` 原生菜单
+   的数据源是 `portable_config/input_contextmenu_plus.conf`（仅
+   `contextmenu_plus` 脚本消费）。给用户可见菜单加项必须写前者，别再写错
+   文件；两套菜单的「工具 > 日志」入口须保持同组，改动后跑
+   `portable_config/syncplay/test_menu_conf.py`（已并入 unittest discover）。
 
 ## 测试命令
 

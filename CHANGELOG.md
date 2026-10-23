@@ -16,6 +16,13 @@
   立即清理一次），调用 `contextmenu_plus.lua` 已注册的同一组 `log-menu-*`
   消息，功能与 `log_menu.conf` 持久化逻辑不变；
   `input_contextmenu_plus.conf` 里的同名动态入口保留，两处分组一致。
+- 防复发守卫（无功能改动）：`input_uosc.conf` 与 `input_contextmenu_plus.conf`
+  头部注明各自服务的菜单（普通右键 vs Ctrl+右键，两套互不相通），
+  `AGENTS.md` 开发规范新增「右键菜单双体系」条目；新增静态回归测试
+  `portable_config/syncplay/test_menu_conf.py`（并入 unittest discover），钉死
+  「工具 > 日志」菜单树与命令、`log-menu-*` 命令必须在 `contextmenu_plus.lua`
+  已注册、uosc conf 不得混入 `#@` 动态子菜单标记、两处 input-conf 接线指向
+  正确文件。
 - 新增 `log_redact.py`：把日志中媒体 URL 的 `token=` / `sign=` 等凭据类查询
   参数替换为 `***`，联机客户端写入前调用；随打包脚本一起进包。
 - 修复打包允许列表遗漏：`log_maintenance.py`、`log_redact.py` 与
