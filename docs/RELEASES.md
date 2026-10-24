@@ -585,6 +585,9 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 3. 重走第二节全流程：推 main → tag `v0.5.2` → `release.yml` 重跑 →
    `gh release create v0.5.2` → `publish-release-assets.yml`（新 run_id +
    新 source_commit）→ 本机重建 x64 并上传 → §四清单验证 8 附件。
+   实测：tag 指向 `82df9cf`；构建 run `40100426760`（success）、发布 run
+   `40100654374`（success）；x64 包 sha256 与初发一致（`6178bac7…9eaad`，
+   仅 CHANGELOG/文档变更，不进包）。
 
 经验：Release 一旦发布，版本名变更没有「改名」操作，只有删除重发；
 若不想重跑 CI，也可让 tag 指回已构建提交并复用旧 run_id（publish 工作流
