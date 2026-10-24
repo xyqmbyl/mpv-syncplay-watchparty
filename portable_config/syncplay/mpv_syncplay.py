@@ -69,6 +69,12 @@ MAX_PROTOCOL_MESSAGE = 4 * 1024 * 1024
 MAX_FILENAME_LENGTH = 250
 MAX_IDENTITY_LENGTH = 128
 
+# 外挂字幕同步：单次最多广播的字幕轨道数与字段长度上限。字幕本身不
+# 走 Syncplay 协议传输，只广播其 AList /d/ URL，观看者用 sub-add 拉取。
+MAX_SUBTITLE_TRACKS = 8
+MAX_SUBTITLE_TITLE_LENGTH = 128
+MAX_SUBTITLE_LANG_LENGTH = 32
+
 # 日志轮转上限：用户选择「保留 3 份 × 每份 2 MB」是为了够排查多次会话
 # 的问题、又不占地方。量级来自实测（3 秒空转约 13 KB，info/v/debug 三档
 # 体积几乎无差别）；若实测需要调整，改这两个模块级常量即可。
@@ -219,6 +225,10 @@ def normalized_remote_file(value):
     if value.get("source_type") == "alist" and media_url is not None:
         result["media_url"] = media_url
         result["source_type"] = "alist"
+        # 字幕描述符仅随 AList 媒体一起传播；单独出现的字幕字段丢弃。
+        subtitles = validated_subtitle_tracks(value.get("subtitles"))
+        if subtitles:
+            result["subtitles"] = subtitles
         owner = value.get("media_owner")
         if isinstance(owner, str):
             owner = owner.strip()
@@ -248,6 +258,51 @@ def media_url_key(value):
     normalized_path = re.sub(r"%([0-9A-Fa-f]{2})", normalize_escape, parsed.path)
     return (parsed.scheme.lower(), parsed.hostname.lower(), port,
             normalized_path, parsed.query)
+
+def validated_subtitle_tracks(value):
+    """Return a bounded, JSON-safe subtitle descriptor list, or ``None``.
+
+    每个描述符形如 ``{"url", "title", "lang", "selected"}``；``None`` 表示
+    值缺失或整体非法（调用方应整体丢弃该字段），空列表表示没有字幕。
+    """
+    if not isinstance(value, list) or len(value) > MAX_SUBTITLE_TRACKS:
+        return None
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        url = validated_media_url(item.get("url"))
+        if url is None:
+            return None
+        key = media_url_key(url)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        def _clean_field(raw, maximum):
+            # 空标题/空语言是合法值（normalized_remote_file 也会产出 ""），
+            # 只有非空且超长/带控制字符才判非法。
+            if raw is None or raw == "":
+                return ""
+            if (not isinstance(raw, str) or len(raw) > maximum or
+                    any(ord(character) < 32 for character in raw)):
+                return None
+            return raw
+
+        title = _clean_field(item.get("title"), MAX_SUBTITLE_TITLE_LENGTH)
+        lang = _clean_field(item.get("lang"), MAX_SUBTITLE_LANG_LENGTH)
+        if title is None or lang is None:
+            return None
+        try:
+            title.encode("utf-8")
+            lang.encode("utf-8")
+        except UnicodeEncodeError:
+            return None
+        result.append({"url": url, "title": title, "lang": lang,
+                       "selected": item.get("selected") is True})
+    return result
+
 
 def media_url_matches_server(value, server):
     """限制远程媒体为用户显式配置的 AList origin 及其 /d/ 路径。"""
@@ -501,6 +556,57 @@ class MpvPlayer:
                 path = os.path.join(str(working_directory), path)
         return os.path.realpath(path)
 
+    def external_sub_tracks(self):
+        """返回本机外挂字幕轨（sub-add / 拖入 / sub-file 产生）。"""
+        tracks = self._simple_get("track-list")
+        if not isinstance(tracks, list):
+            return []
+        result = []
+        for track in tracks:
+            if (not isinstance(track, dict) or track.get("type") != "sub" or
+                    track.get("external") is not True):
+                continue
+            filename = track.get("filename")
+            if not isinstance(filename, str) or not filename:
+                continue
+            title = track.get("title")
+            lang = track.get("lang")
+            result.append({
+                "id": track.get("id"),
+                "path": filename,
+                "title": title if isinstance(title, str) else "",
+                "lang": lang if isinstance(lang, str) else "",
+                "selected": track.get("selected") is True,
+            })
+        return result
+
+    def sub_add(self, url, title=None, lang=None, selected=True):
+        """sub-add 支持网络 URL；title/lang 为位置参数需成对占位。"""
+        command = ["sub-add", str(url), "select" if selected else "auto"]
+        if title or lang:
+            command.extend([str(title or ""), str(lang or "")])
+        response = self._submit(command, timeout=10.0)
+        error = (response.get("error", "unknown")
+                 if isinstance(response, dict) else "invalid response")
+        return None if error == "success" else error
+
+    def sub_remove(self, url):
+        """按外挂字幕的来源 URL 定位轨道并移除；找不到返回 False。"""
+        tracks = self._simple_get("track-list")
+        if not isinstance(tracks, list):
+            return False
+        for track in tracks:
+            if (isinstance(track, dict) and track.get("type") == "sub" and
+                    track.get("external") is True and
+                    track.get("filename") == url):
+                track_id = track.get("id")
+                if isinstance(track_id, int):
+                    response = self._submit(["sub-remove", track_id])
+                    error = (response.get("error", "unknown")
+                             if isinstance(response, dict) else "invalid response")
+                    return error == "success"
+        return False
+
     def load_remote(self, url, readahead=20.0):
         """暂停旧媒体、启用 HTTP 缓存并以远程地址替换当前文件。"""
         url = validated_media_url(url)
@@ -568,6 +674,11 @@ class VirtualPlayer:
         self.readahead = 0.0
         self.command_log = []
         self._media_ready = True
+        # 字幕测试支撑：local_external_subs 模拟房主本机外挂字幕文件，
+        # external_subs 是 sub_add 添加（观看者同步）得到的轨道。
+        self.local_external_subs = []
+        self.external_subs = []
+        self._next_sub_id = 1
         threading.Thread(target=self._stdin_loop, daemon=True).start()
 
     def _advance(self):
@@ -633,6 +744,52 @@ class VirtualPlayer:
             return (self._media_ready and self.pos is not None and
                     media_url_key(self.path) == media_url_key(url))
 
+    def external_sub_tracks(self):
+        tracks = []
+        with self._lock:
+            for entry in self.local_external_subs:
+                tracks.append({
+                    "id": None,
+                    "path": entry.get("path"),
+                    "title": entry.get("title", ""),
+                    "lang": entry.get("lang", ""),
+                    "selected": bool(entry.get("selected")),
+                })
+            for entry in self.external_subs:
+                tracks.append({
+                    "id": entry.get("id"),
+                    "path": entry.get("filename"),
+                    "title": entry.get("title", ""),
+                    "lang": entry.get("lang", ""),
+                    "selected": bool(entry.get("selected")),
+                })
+        return tracks
+
+    def sub_add(self, url, title=None, lang=None, selected=True):
+        with self._lock:
+            entry_id = self._next_sub_id
+            self._next_sub_id += 1
+            self.external_subs.append({
+                "id": entry_id,
+                "filename": str(url),
+                "title": str(title or ""),
+                "lang": str(lang or ""),
+                "selected": bool(selected),
+            })
+            self.command_log.append(["sub-add", str(url),
+                                     "select" if selected else "auto",
+                                     str(title or ""), str(lang or "")])
+        return None
+
+    def sub_remove(self, url):
+        with self._lock:
+            for index, entry in enumerate(self.external_subs):
+                if entry.get("filename") == str(url):
+                    self.external_subs.pop(index)
+                    self.command_log.append(["sub-remove", entry.get("id")])
+                    return True
+        return False
+
     def is_alive(self):
         return True
 
@@ -697,6 +854,13 @@ class SyncClient:
         self._observed_path = None
         self._last_file_identity = None
         self._last_file_payload = None
+        # 外挂字幕同步：房主侧 _last_sub_signature 用于变更去重再广播；
+        # 观看者侧 _applied_subtitles 记录已 sub-add 的字幕（按媒体 URL 键），
+        # _subtitle_failures 限制单条字幕的重试次数，避免坏 URL 反复打 IPC。
+        self._last_sub_signature = None
+        self._applied_subtitles = {}
+        self._subtitle_failures = {}
+        self._subtitle_hint_time = 0.0
         # 全局（房间）状态
         self.global_pos = None
         self.global_paused = None
@@ -831,6 +995,9 @@ class SyncClient:
                 self._failed_media = None
                 self._last_file_identity = None
                 self._last_file_payload = None
+                self._last_sub_signature = None
+                self._applied_subtitles = {}
+                self._subtitle_failures = {}
                 self.ready = True
                 self._received_user_list = False
                 self.server_isolate_rooms = None
@@ -930,6 +1097,165 @@ class SyncClient:
             return ("file", payload.get("name"), payload.get("duration"),
                     payload.get("size"), url_key)
         return None
+
+    @staticmethod
+    def _subtitle_signature(payload):
+        """仅由 URL/标题/选中态构成的去重签名；选择变化也会触发重广播。"""
+        subs = payload.get("subtitles") if isinstance(payload, dict) else None
+        if not isinstance(subs, list):
+            return ()
+        return tuple(sorted(
+            (str(item.get("url")), str(item.get("title") or ""),
+             bool(item.get("selected")))
+            for item in subs if isinstance(item, dict)))
+
+    def _collect_host_subtitles(self):
+        """把本机外挂字幕映射为可公开访问的 AList 描述符列表。
+
+        只发布能被 MediaProvider 映射（即位于 AList 共享目录内）的字幕；
+        字幕在共享目录外时通过日志提示房主，且绝不发送本地路径。
+        """
+        if not (self.media_sharing_enabled and self.media_provider is not None
+                and self.media_provider.enabled):
+            return []
+        collector = getattr(self.player, "external_sub_tracks", None)
+        if collector is None:
+            return []
+        try:
+            tracks = collector()
+        except (AttributeError, OSError, ValueError):
+            return []
+        if not isinstance(tracks, list):
+            return []
+        descriptors = []
+        unmapped = []
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            path = track.get("path")
+            mapped = None
+            if isinstance(path, str) and path:
+                try:
+                    mapped = self.media_provider.local_to_url(path)
+                except (OSError, TypeError, ValueError):
+                    mapped = None
+            url = (validated_media_url(mapped.get("url"))
+                   if isinstance(mapped, dict) else None)
+            if url is None:
+                if isinstance(path, str) and path:
+                    unmapped.append(path)
+                continue
+            title = track.get("title")
+            if (not isinstance(title, str) or not title or
+                    len(title) > MAX_SUBTITLE_TITLE_LENGTH or
+                    any(ord(character) < 32 for character in title)):
+                title = (os.path.basename(path)
+                         if isinstance(path, str) else "")
+            lang = track.get("lang")
+            if (not isinstance(lang, str) or len(lang) > MAX_SUBTITLE_LANG_LENGTH or
+                    any(ord(character) < 32 for character in lang)):
+                lang = ""
+            descriptors.append({"url": url, "title": title or "", "lang": lang,
+                                "selected": track.get("selected") is True})
+        if unmapped and not descriptors and time.time() - self._subtitle_hint_time > 60.0:
+            self._subtitle_hint_time = time.time()
+            log("外挂字幕不在 AList 共享目录内，观看者无法同步：%s" % unmapped[0])
+        return descriptors[:MAX_SUBTITLE_TRACKS]
+
+    def _sync_remote_subtitles(self):
+        """让本机字幕轨与房主发布的字幕集合一致（watcher 线程专用）。
+
+        媒体仍处于加载流程时跳过；字幕 URL 必须与配置的 AList 服务器同源，
+        与媒体共用同一套防回环/防外源校验。失败重试最多 3 次后放弃并记录。
+        """
+        if not self.media_sharing_enabled:
+            return False
+        with self._lock:
+            if (not self.logged or self._pending_media or self._loading_media or
+                    self._cancelled_media_restore):
+                return False
+            source = dict(self._current_media_source or {})
+            confirmed = self._current_media_confirmed
+            scope = self._current_media_scope
+            current_scope = (self.args.server, self.room)
+        if (self.server_isolate_rooms is not True or
+                source.get("source_type") != "alist" or not confirmed or
+                scope != current_scope):
+            return False
+        url = validated_media_url(source.get("media_url"))
+        url_key = media_url_key(url)
+        observed_key = media_url_key(self._observed_path)
+        if url_key is None or observed_key is None or observed_key != url_key:
+            return False
+        desired = [item for item in
+                   (validated_subtitle_tracks(source.get("subtitles")) or [])
+                   if media_url_matches_server(item["url"], self.alist_server)]
+        with self._lock:
+            applied = [dict(entry) for entry in
+                       self._applied_subtitles.get(url_key, [])]
+        adder = getattr(self.player, "sub_add", None)
+        remover = getattr(self.player, "sub_remove", None)
+        changed = False
+        added_titles = []
+
+        desired_keys = {media_url_key(item["url"]) for item in desired}
+        survivors = []
+        for entry in applied:
+            entry_key = media_url_key(entry.get("url"))
+            if entry_key in desired_keys:
+                survivors.append(entry)
+            elif remover is not None:
+                try:
+                    removed = remover(entry.get("url"))
+                except (AttributeError, OSError):
+                    removed = False
+                if removed:
+                    changed = True
+                    log("已移除房主撤销的外挂字幕：%s" %
+                        (entry.get("title") or entry.get("url")))
+                else:
+                    survivors.append(entry)   # 删除失败保留登记，稍后再试
+        applied = survivors
+
+        applied_keys = {media_url_key(entry.get("url")) for entry in applied}
+        for item in desired:
+            item_url = item["url"]
+            item_key = media_url_key(item_url)
+            if item_key in applied_keys or adder is None:
+                continue
+            failures = self._subtitle_failures.get(item_key, 0)
+            if failures >= 3:
+                continue
+            try:
+                error = adder(item_url, item.get("title") or "",
+                              item.get("lang") or "",
+                              item.get("selected") is True)
+            except (AttributeError, OSError) as exc:
+                error = str(exc)
+            if error:
+                self._subtitle_failures[item_key] = failures + 1
+                if self._subtitle_failures[item_key] >= 3:
+                    log("同步外挂字幕失败（已放弃）：%s（%s）" %
+                        (item.get("title") or item_url, error))
+                continue
+            self._subtitle_failures.pop(item_key, None)
+            applied.append({"url": item_url, "title": item.get("title") or "",
+                            "lang": item.get("lang") or "",
+                            "selected": item.get("selected") is True})
+            applied_keys.add(item_key)
+            changed = True
+            added_titles.append(item.get("title") or item_url)
+            log("已同步房主外挂字幕：%s" % (item.get("title") or item_url))
+
+        if changed:
+            with self._lock:
+                self._applied_subtitles[url_key] = applied
+            if added_titles:
+                try:
+                    self.player.osd("💬 已同步房主字幕：%s" % "、".join(added_titles))
+                except Exception:
+                    pass
+        return changed
 
     def _consider_remote_media(self, username, room, file_info):
         """验证同房间 AList 元数据并排队；绝不在网络读取线程中调用 mpv。"""
@@ -1037,6 +1363,10 @@ class SyncClient:
                 return True
             for queued in (self._pending_media, self._loading_media):
                 if queued and media_url_key(queued.get("url")) == target_key:
+                    # 同一媒体的后续公告（如新增字幕）要刷新排队快照，
+                    # 否则加载完成时会把旧描述符固化进 _current_media_source。
+                    queued["file"] = dict(file_info)
+                    queued["file"]["media_owner"] = publisher
                     return True
             if (self._failed_media and media_url_key(self._failed_media.get("url")) == target_key
                     and time.time() - self._failed_media.get("time", 0) < 10.0):
@@ -1114,6 +1444,7 @@ class SyncClient:
                 self._current_media_confirmed = False
                 self._last_file_identity = None
                 self._last_file_payload = None
+                self._last_sub_signature = None
             if (isinstance(self._failed_media, dict) and
                     self._failed_media.get("owner") == username):
                 self._failed_media = None
@@ -1311,12 +1642,21 @@ class SyncClient:
             self._current_media_source["media_url"] = url
             self._current_media_source["source_type"] = "alist"
             self._current_media_source["media_owner"] = item.get("owner")
+            # loadfile replace 已清空旧轨道；字幕描述符以排队快照为准，
+            # watcher 随后按它 sub-add，因此这里不必回显进对外公告载荷。
+            subtitle_payload = validated_subtitle_tracks(
+                (item.get("file") or {}).get("subtitles"))
+            if subtitle_payload:
+                self._current_media_source["subtitles"] = subtitle_payload
             self._current_media_scope = (self.args.server, self.room)
             self._current_media_confirmed = True
             self._observed_path = url
             self.filename = payload.get("name") if payload else None
             self._last_file_payload = dict(payload or {})
             self._last_file_identity = identity
+            self._last_sub_signature = ()
+            self._applied_subtitles = {}
+            self._subtitle_failures = {}
             self._loading_media = None
             self._failed_media = None
             if str(self.last_error or "").startswith("AList 媒体加载失败"):
@@ -1481,6 +1821,9 @@ class SyncClient:
             self.filename = None
             self._last_file_identity = None
             self._last_file_payload = None
+            self._last_sub_signature = None
+            self._applied_subtitles = {}
+            self._subtitle_failures = {}
             self._pending_media = None
             self._loading_media = None
             self._cancelled_media_restore = None
@@ -1676,6 +2019,9 @@ class SyncClient:
                     self._current_media_confirmed = False
                     self._last_file_identity = None
                     self._last_file_payload = None
+                    self._last_sub_signature = None
+                    self._applied_subtitles = {}
+                    self._subtitle_failures = {}
                     self.global_pos = None
                     self.global_paused = None
                     self.users = {}
@@ -1688,6 +2034,7 @@ class SyncClient:
                     self._current_media_confirmed = False
                     self._last_file_identity = None
                     self._last_file_payload = None
+                    self._last_sub_signature = None
                 self.room = assigned_room
                 self.args.room = assigned_room
             self.server_isolate_rooms = isolate_rooms
@@ -2038,6 +2385,9 @@ class SyncClient:
                 self._check_media_gate()
                 continue
 
+            # 观看者：对齐房主发布的外挂字幕集合（媒体加载流程结束后才生效）。
+            self._sync_remote_subtitles()
+
             gate_active = self._check_media_gate()
             pos, paused = self.player.get_state()
             if not self.player.is_alive():
@@ -2055,12 +2405,21 @@ class SyncClient:
                 self._observed_path = path
 
             payload = self._build_file_payload(info, path)
+            # 房主：外挂字幕映射为 AList URL 附在公告里；观看者载荷没有
+            # media_url（本地路径），不会误带 subtitles。
+            subtitles = self._collect_host_subtitles()
+            if (subtitles and isinstance(payload, dict) and
+                    payload.get("source_type") == "alist" and
+                    payload.get("media_url") and not validated_media_url(path)):
+                payload["subtitles"] = subtitles
             identity = self._file_identity(path, payload)
+            sub_signature = self._subtitle_signature(payload)
             announce = False
             gate_started = False
             if payload and identity is not None:
                 with self._lock:
-                    announce = identity != self._last_file_identity
+                    announce = (identity != self._last_file_identity or
+                                sub_signature != self._last_sub_signature)
                     old_hosted_url = self._hosted_media_url
                 if announce:
                     media_url = validated_media_url(payload.get("media_url"))
@@ -2087,9 +2446,12 @@ class SyncClient:
                             self.filename = payload.get("name")
                             self._last_file_payload = dict(payload)
                             self._last_file_identity = identity
+                            self._last_sub_signature = sub_signature
                         self._send_set({"file": payload})
-                        log("发送文件信息：%s%s" %
-                            (self.filename, "（AList）" if media_url else ""))
+                        log("发送文件信息：%s%s%s" %
+                            (self.filename, "（AList）" if media_url else "",
+                             "（含 %d 条外挂字幕）" % len(payload.get("subtitles") or [])
+                             if payload.get("subtitles") else ""))
 
             if gate_active or gate_started:
                 # 等待期间即使本地用户按下播放，也立即恢复为暂停；ready
@@ -2205,6 +2567,8 @@ class SyncClient:
                 "waiting_users": (list(self._media_gate.get("waiting", []))
                                   if self._media_gate else []),
                 "server_isolate_rooms": self.server_isolate_rooms,
+                "synced_subtitles": sum(
+                    len(entries) for entries in self._applied_subtitles.values()),
                 "timestamp": time.time(),
             }
 
@@ -2639,6 +3003,11 @@ class MiniServer:
         if value.get("source_type") == "alist" and media_url is not None:
             result["media_url"] = media_url
             result["source_type"] = "alist"
+            # 与 media_url 同一套白名单思路：字幕描述符只随 AList 媒体转发，
+            # 形态非法时整体丢弃字段，不影响媒体本身继续流转。
+            subtitles = validated_subtitle_tracks(value.get("subtitles"))
+            if subtitles:
+                result["subtitles"] = subtitles
             owner = cls._clean_label(value.get("media_owner"))
             if owner is not None:
                 result["media_owner"] = owner
