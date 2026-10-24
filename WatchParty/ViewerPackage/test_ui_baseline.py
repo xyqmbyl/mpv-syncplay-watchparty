@@ -88,9 +88,10 @@ UI_LAYER_FILES = (
     "shaders/mpv360.glsl",
 )
 
-# The only intentional difference from the author's local menu: these two uosc
-# main-menu groups are removed. Their keybindings stay live.
-REMOVED_MENU_GROUPS = ("VF 滤镜", "着色器")
+# v0.6.0 起主菜单按现行 input_uosc.conf 完整发布：VF 滤镜 / 着色器两组
+# （补帧预设与 AI 超分入口）随包提供，不再从菜单剥离。v0.3.0 时代
+# 「删除这两组、只留按键」的口径已随 AI 超分菜单上线废止。
+MAIN_MENU_GROUPS = ("加载", "导航", "VF 滤镜", "着色器", "截屏", "视频", "工具", "关于")
 
 # Files the local config asks mpv to load; the shared base must reach the package
 # or the shipped UI silently falls back to mpv defaults.
@@ -348,16 +349,10 @@ class UiBaselineTests(unittest.TestCase):
                     f"shipped UI layer is missing {relative}",
                 )
 
-    def test_main_menu_drops_only_the_two_groups(self):
+    def test_main_menu_keeps_all_baseline_groups(self):
         labels = menu_labels((PORTABLE_DIR / "input_uosc.conf").read_text(encoding="utf-8"))
-        for group in REMOVED_MENU_GROUPS:
-            with self.subTest(group=group):
-                self.assertFalse(
-                    any(label == group or label.startswith(group + " >") for label in labels),
-                    f"{group} must not appear in the shipped main menu",
-                )
-        # Other groups must still be present, otherwise the menu was gutted.
-        for group in ("截屏", "视频", "工具", "导航", "关于", "加载"):
+        # All groups must be present, otherwise the menu was gutted.
+        for group in MAIN_MENU_GROUPS:
             with self.subTest(group=group):
                 self.assertTrue(
                     any(label == group or label.startswith(group + " >") for label in labels),
@@ -514,11 +509,11 @@ class UiBaselineTests(unittest.TestCase):
             "packaged keybindings differ from the source config",
         )
         labels = menu_labels(shipped_input)
-        for group in REMOVED_MENU_GROUPS:
+        for group in MAIN_MENU_GROUPS:
             with self.subTest(group=group):
-                self.assertFalse(
+                self.assertTrue(
                     any(label == group or label.startswith(group + " >") for label in labels),
-                    f"package menu still contains {group}",
+                    f"package menu lost {group}",
                 )
         self.assertEqual(
             sha256(portable / "scripts" / "syncplay_ui.lua"),
