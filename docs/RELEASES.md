@@ -523,7 +523,10 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 
 ---
 
-## 十二、2026-10-24 发布 v0.6.0（外挂字幕同步 + 日志能力，实测全程留痕）
+## 十二、2026-10-24 发布 v0.5.2（外挂字幕同步 + 日志能力，实测全程留痕）
+
+> 最终版本名为 **v0.5.2**；初发时曾用 v0.6.0，同日按用户裁决改名重发，
+> 过程见 12.4。下文 12.1–12.3 的时间线保留初发时的原始记录。
 
 本次按第二节流程把两批功能合并为一个版本发布，全部步骤实测通过。
 
@@ -569,4 +572,22 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
    核对（本次脚本见会话留痕，可重写）。
 4. `gh release create` 的 notes 必须写文件（`--notes-file`），内联中文
    反引号/反斜杠转义在 Git Bash 下不可靠。
+
+### 12.4 同日改名重发：v0.6.0 → v0.5.2（用户裁决）
+
+用户要求版本名用 0.5.2（视为补丁版本而非 minor）。因 v0.6.0 Release 已
+发布，采取「删旧建新、完整重走发布链」而非就地改名：
+
+1. `CHANGELOG.md` 顶部条目改 `## 0.5.2 - 2026-10-24`；本节标题同步。
+2. `gh release delete v0.6.0 --yes --cleanup-tag`（Release 与远端 tag 一并
+   删除）+ 本地 `git tag -d v0.6.0`。**旧 Release 附件随之删除**（CI 包与
+   x64 包分别可由 Actions artifact 与本机重构建恢复，不依赖旧 Release）。
+3. 重走第二节全流程：推 main → tag `v0.5.2` → `release.yml` 重跑 →
+   `gh release create v0.5.2` → `publish-release-assets.yml`（新 run_id +
+   新 source_commit）→ 本机重建 x64 并上传 → §四清单验证 8 附件。
+
+经验：Release 一旦发布，版本名变更没有「改名」操作，只有删除重发；
+若不想重跑 CI，也可让 tag 指回已构建提交并复用旧 run_id（publish 工作流
+校验的是 run 与 source_commit 的对应，不校验 tag），但 CHANGELOG 里版本
+条目与 tag 指向的提交会不一致，本仓选择完整重发保持三者一致。
 
