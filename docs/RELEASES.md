@@ -520,3 +520,53 @@ rem 管道里的 --json 输出仍由 PYTHONIOENCODING=utf-8 保证为 UTF-8。
 **未 bump 版本号**；提交后经 `ssh://git@ssh.github.com:443/` 通道推送 main。
 
 <!-- 生成于 2026-10-23，WatchParty 日志功能交付时留痕 -->
+
+---
+
+## 十二、2026-10-24 发布 v0.6.0（外挂字幕同步 + 日志能力，实测全程留痕）
+
+本次按第二节流程把两批功能合并为一个版本发布，全部步骤实测通过。
+
+### 12.1 版本内容
+
+- **外挂字幕同步**（commit `9af72ef`）：房主 sub-add / 拖入外挂字幕 →
+  `MediaProvider` 映射 AList `/d/` URL 随 `Set file` 广播 → 观看者自动
+  `sub-add` 同一条字幕；白名单 `validated_subtitle_tracks`（≤8 条、同源
+  校验、本地路径不上网络）。新增 `test_subtitle_sharing.py`（18 例）。
+- **日志能力**（此前 Unreleased 的全部条目：三段日志、工具→日志菜单、
+  `log_redact.py` 脱敏、菜单双体系守卫）随本版本首次正式发布。
+- **阻塞修复**（commit `7f0e598`）：`test_ui_baseline.py` 的
+  `test_main_menu_drops_only_the_two_groups` 是 v0.3.0 时代「主菜单剥离
+  VF 滤镜/着色器两组」的过时口径，与现行 `input_uosc.conf`（AI 超分/补帧
+  菜单有意加回两组）冲突，自 2026-10 起在本机与 CI 均失败并卡死
+  `release.yml` 的 macOS job。已改为 `test_main_menu_keeps_all_baseline_groups`
+  （`MAIN_MENU_GROUPS` 八组必须齐全，菜单被挖空同样报错）。**教训：基线
+  测试口径变更必须随菜单改动同步，否则发布当日才发现。**
+
+### 12.2 实测时间线
+
+| 步骤 | 结果 |
+| --- | --- |
+| CHANGELOG 顶部 `## 0.6.0 - 2026-10-24`（一次 bump、单一条目） | commit `b5c8c47` |
+| 首次推 tag `v0.6.0` → `release.yml` run `40098227100` | **失败**（33s）：上述基线 2 处旧断言 |
+| 修复基线测试、推 main（HTTPS 被重置，走 `ssh.github.com:443`） | commit `7f0e598` |
+| **移动 tag**（本地 `-d` + 远端 `:refs/tags/v0.6.0` 删除后重推） | tag → `7f0e598`；此时尚无 Release/附件消费该 tag，移动安全 |
+| `release.yml` run `40098669853`（3m6s） | **success**，产出 x86 + macOS×2 |
+| `gh release create v0.6.0 --notes-file`（反引号内联 notes 会被 bash 吞掉，**必须用文件**） | Release 建立 |
+| 本机 `build-watchparty-package.ps1 -Arch x64 -NativeRoot "D:\MPV-Duke-Enhanced-Extra"` | 191 文件 / 123987245 B / sha256 `6178bac7…9eaad`；包内 `mpv_syncplay.py` 与仓库逐字节一致且含字幕同步代码（上传前 Python zip 抽验） |
+| `publish-release-assets.yml` run `40099204792`（run_id + 40 位小写 `source_commit` + tag） | success，6 附件严格校验后覆盖上传 |
+| `gh release upload v0.6.0 <x64.zip> <x64.zip.sha256>` | 与 publish 工作流互不干扰（其只处理 6 个确定名称） |
+| 验证 | 8 附件齐全（4 ZIP + 4 sidecar），见 §四清单 |
+
+### 12.3 给下次的要点
+
+1. **发布前必跑**：`test_ui_baseline.py` 必须在干净树上全绿——它现在是
+   `release.yml` 的 CI 门槛，本地「既有失败」就是发布阻塞。
+2. tag 推送后立即盯 `gh run list --workflow=release.yml`；失败要**当天**
+   修完重指 tag（未建 Release 前移动 tag 无副作用，建 Release 后则应换
+   版本号重发，不要覆盖）。
+3. Windows x64 本机构建约 2 分钟，包内客户端一致性用 zipfile 抽 sha256
+   核对（本次脚本见会话留痕，可重写）。
+4. `gh release create` 的 notes 必须写文件（`--notes-file`），内联中文
+   反引号/反斜杠转义在 Git Bash 下不可靠。
+
