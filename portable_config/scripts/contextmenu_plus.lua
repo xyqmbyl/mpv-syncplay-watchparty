@@ -531,6 +531,24 @@ local function log_expand(path)
     return nil
 end
 
+-- 归一化 expand-path 的结果：它返回正斜杠且保留 '..'（如
+-- D:/x/portable_config/../logs），explorer.exe 不认这种形态，会退回
+-- 「文档」目录。转反斜杠并消解 '..'/'.' 段；非盘符路径只替换斜杠兜底。
+local function log_normalize(path)
+    if not path then return nil end
+    local drive, rest = path:match('^(%a:)[/\\](.*)$')
+    if not drive then return (path:gsub('/', '\\')) end
+    local parts = {}
+    for seg in rest:gmatch('[^/\\]+') do
+        if seg == '..' then
+            if #parts > 0 then parts[#parts] = nil end
+        elseif seg ~= '.' and seg ~= '' then
+            parts[#parts + 1] = seg
+        end
+    end
+    return drive .. '\\' .. table.concat(parts, '\\')
+end
+
 local function log_notify(text, seconds)
     pcall(mp.osd_message, text, seconds or 3)
 end
@@ -690,7 +708,7 @@ end
 
 -- 动作：打开日志文件夹
 local function log_open_dir()
-    local dir = log_expand(log_dir_path)
+    local dir = log_normalize(log_expand(log_dir_path))
     if not dir then
         log_notify('日志目录不可用', 4)
         return
