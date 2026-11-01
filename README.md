@@ -1,6 +1,6 @@
 # MPV Syncplay WatchParty
 
-这是一个面向 Windows 与 macOS 便携版 mpv 的无聊天同步观影扩展。它保留现有
+这是一个面向 Windows 与 macOS 便携版 mpv 的联机同步观影扩展。它保留现有
 Syncplay 播放、暂停、跳转、延迟补偿和 MiniServer 行为，并增加：
 
 - mpv 内置的简洁二级侧边栏控制面板；
